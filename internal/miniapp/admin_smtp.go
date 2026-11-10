@@ -115,7 +115,7 @@ func (h *Handler) handleAdminSMTP(w http.ResponseWriter, r *http.Request, sess *
 			h.writeError(w, 400, "invalid_email", "Введите адрес получателя тестового письма")
 			return
 		}
-		err = sendSMTPMessage(ctx, s, email, "Проверка почты Link-Bot", "SMTP работает. Это тестовое письмо из панели администратора.")
+		err = sendSMTPMessage(ctx, s, email, "Проверка почты Kront VPN", "SMTP работает. Это тестовое письмо из панели администратора.")
 	} else {
 		client, connectErr := connectSMTP(ctx, s)
 		err = connectErr

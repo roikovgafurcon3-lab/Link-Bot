@@ -288,7 +288,7 @@ func setGoogleCallbackHeaders(w http.ResponseWriter) {
 }
 
 func googleLinkCallbackHTML() string {
-	title := html.EscapeString("Link-Bot")
+	title := html.EscapeString("Kront VPN")
 	return `<!doctype html>
 <html lang="ru">
 <head>
@@ -321,13 +321,13 @@ func googleLinkCallbackHTML() string {
 </head>
 <body>
   <main class="card" aria-live="polite">
-    <div class="mark"><img src="/mini-app/assets/brand-mark.png?v=20260720-brand2" alt="Link-Bot"></div>
-    <div class="eyebrow">Link-Bot</div>
+    <div class="mark"><img src="/mini-app/assets/brand-mark.png?v=20260720-brand2" alt="Kront VPN"></div>
+    <div class="eyebrow">Kront VPN</div>
     <h1 id="title">Привязываем Gmail</h1>
     <p id="text">Подождите, завершаем авторизацию Google.</p>
     <div class="spinner" aria-hidden="true"></div>
     <div class="status-icon" id="icon" aria-hidden="true">✓</div>
-    <div class="actions"><a href="/mini-app/">Открыть Link-Bot</a></div>
+    <div class="actions"><a href="/mini-app/">Открыть Kront VPN</a></div>
   </main>
   <script>
     (async function () {

@@ -5,7 +5,7 @@
   "image_referral_url": "https://i.pinimg.com/736x/dc/2a/33/dc2a33366229fe456561e3240d672b43.jpg",
   "image_trial_url": "https://i.pinimg.com/1200x/77/0b/b4/770bb497c2c4d67cddb22a85f7ea8576.jpg",
 
-  "greeting": "<tg-emoji emoji-id=\"5893168654551355607\">✅</tg-emoji> <b>Link-Bot</b>\n\n<b>Всё теперь находится в Личном кабинете:</b>\n<tg-emoji emoji-id=\"5278305362703835500\">🔗</tg-emoji> <b>подключение и настройка</b>\n<tg-emoji emoji-id=\"5206626000665868017\">📚</tg-emoji> <b>тарифы и продление</b>\n<tg-emoji emoji-id=\"5278778882848220741\">📊</tg-emoji> <b>статус серверов</b>\n<tg-emoji emoji-id=\"5206222720416643915\">🔔</tg-emoji> <b>поддержка</b>\n\n<tg-emoji emoji-id=\"5875008416132370818\">🔽</tg-emoji><b>Нажмите кнопку ниже, чтобы открыть личный кабинет</b><tg-emoji emoji-id=\"5875008416132370818\">🔽</tg-emoji>",
+  "greeting": "<tg-emoji emoji-id=\"5893168654551355607\">✅</tg-emoji> <b>Kront VPN</b>\n\n<b>Всё теперь находится в Личном кабинете:</b>\n<tg-emoji emoji-id=\"5278305362703835500\">🔗</tg-emoji> <b>подключение и настройка</b>\n<tg-emoji emoji-id=\"5206626000665868017\">📚</tg-emoji> <b>тарифы и продление</b>\n<tg-emoji emoji-id=\"5278778882848220741\">📊</tg-emoji> <b>статус серверов</b>\n<tg-emoji emoji-id=\"5206222720416643915\">🔔</tg-emoji> <b>поддержка</b>\n\n<tg-emoji emoji-id=\"5875008416132370818\">🔽</tg-emoji><b>Нажмите кнопку ниже, чтобы открыть личный кабинет</b><tg-emoji emoji-id=\"5875008416132370818\">🔽</tg-emoji>",
 
   "connect_press": "🔗 Подключится",
   "connect_button": "⚙️ Подписка",
@@ -51,7 +51,7 @@
   "channel_button": "📢 Новости",
   "web_app_button_text": "Вход",
   "support_chat_button_text": "Чат с поддержкой",
-  "required_channel_subscription_text": "<b>Link-Bot Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
+  "required_channel_subscription_text": "<b>Kront VPN Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
   "required_channel_subscription_confirm_button": "✅ Я подписался",
   "required_channel_subscription_required_notice": "Подпишитесь на канал, чтобы продолжить",
   "required_channel_subscription_not_subscribed": "Подписка пока не найдена",

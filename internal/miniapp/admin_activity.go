@@ -50,7 +50,7 @@ var activityReadRoutes = map[string]bool{
 var activityActions = map[string]activityAction{
 	"appearance/presets":              {"Изменил сохранённые темы", "settings", "action id name"},
 	"payments/logo/upload":            {"Загрузил логотип способа оплаты", "settings", ""},
-	"bot/update":                      {"Запустил обновление Link-Bot", "system", ""},
+	"bot/update":                      {"Запустил обновление Kront VPN", "system", ""},
 	"settings/update":                 {"Изменил настройки", "settings", "section"},
 	"users/open":                      {"Открыл карточку пользователя", "users", "customerId panelId"},
 	"users/balance":                   {"Изменил баланс пользователя", "users", "customerId balanceAction amountRub"},

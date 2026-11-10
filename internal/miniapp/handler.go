@@ -3523,7 +3523,7 @@ func (h *Handler) handleAdminWebPushTest(w http.ResponseWriter, r *http.Request,
 	}
 	if err := h.webPush.Notify(r.Context(), adminnotify.Event{
 		Title: "Тестовое уведомление",
-		Body:  "Push-уведомления Link-Bot работают",
+		Body:  "Push-уведомления Kront VPN работают",
 		URL:   config.AdminURL("push"),
 		Tag:   fmt.Sprintf("admin-push-test-%d", time.Now().UnixNano()),
 	}); err != nil {

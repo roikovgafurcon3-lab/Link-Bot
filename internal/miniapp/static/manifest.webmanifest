@@ -1,7 +1,7 @@
 {
-  "name": "Link-Bot",
-  "short_name": "Link-Bot",
-  "description": "Link-Bot web dashboard",
+  "name": "Kront VPN",
+  "short_name": "Kront VPN",
+  "description": "Kront VPN web dashboard",
   "id": "/mini-app/",
   "start_url": "/mini-app/",
   "scope": "/mini-app/",

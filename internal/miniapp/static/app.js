@@ -235,14 +235,14 @@ async function getPWAServiceWorkerRegistration() {
 	const registration = await withWebPushTimeout(
 		navigator.serviceWorker.register("/mini-app/sw.js", { scope: pwaServiceWorkerScope, updateViaCache: "none" }),
 		WEB_PUSH_WORKER_TIMEOUT_MS,
-		"iPhone не завершил подготовку уведомлений. Полностью закройте Link-Bot, откройте снова и повторите.",
+		"iPhone не завершил подготовку уведомлений. Полностью закройте Kront VPN, откройте снова и повторите.",
 		"push_worker_timeout",
 	);
 	if (registration.active?.state === "activated") return registration;
 	const ready = await withWebPushTimeout(
 		navigator.serviceWorker.ready,
 		WEB_PUSH_WORKER_TIMEOUT_MS,
-		"iPhone не активировал уведомления. Полностью закройте Link-Bot, откройте снова и повторите.",
+		"iPhone не активировал уведомления. Полностью закройте Kront VPN, откройте снова и повторите.",
 		"push_worker_timeout",
 	);
 	if (!ready?.active) throw new Error("Не удалось активировать системные уведомления");
@@ -715,13 +715,13 @@ async function completeTelegramLink(idToken) {
 
 function browserAuthBrand() {
   const content = getRuntimeSettings()?.content || {};
-  const name = String(content.brandName || state.data?.brand?.name || "Link-Bot").trim() || "Link-Bot";
+  const name = String(content.brandName || state.data?.brand?.name || "Kront VPN").trim() || "Kront VPN";
   const logoUrl = resolveBrandMarkURL(content.logoUrl || state.data?.brand?.logoUrl || "");
   return { name, logoUrl };
 }
 
 function browserAuthCopy(brandName = browserAuthBrand().name) {
-  const name = String(brandName || "Link-Bot").trim() || "Link-Bot";
+  const name = String(brandName || "Kront VPN").trim() || "Kront VPN";
 	if (state.locale === "fa") {
 		return {
 			title: `ورود به ${name}`,
@@ -1261,7 +1261,7 @@ const PALETTE = {
 };
 
 const previewPayload = {
-  brand: { name: "Link-Bot", logoUrl: BRAND_MARK_URL },
+  brand: { name: "Kront VPN", logoUrl: BRAND_MARK_URL },
   user: { id: 777777, firstName: "Link", username: "linkbot", panelUsername: "", photoUrl: "", languageCode: "ru", authProvider: "telegram", googleEmail: "", googleLinked: false, telegramLinked: true },
   subscription: { status: "active", daysLeft: 26724, planMonths: 12, userId: 1, userUuid: "00000000-0000-0000-0000-000000000001", expiresAt: new Date(Date.now() + 26724 * 86400000).toISOString(), subscriptionLink: "https://example.com/sub/link-bot/secure-link", hasAccessLink: true, trafficUsedBytes: 0, trafficLimitBytes: 0, deviceUsedCount: 1, deviceLimitCount: 0, devices: [{ hwid: "demo-hwid-1", platform: "iOS", osVersion: "18.4", deviceModel: "iPhone 16", userAgent: "Happ/4.6.0/ios", createdAt: new Date(Date.now() - 86400000).toISOString(), updatedAt: new Date().toISOString() }] },
   subscriptions: { activeId: 1, maximum: 3, items: [{ id: 1, name: "Основная", position: 1, isPrimary: true, isActive: true, status: "active", expiresAt: new Date(Date.now() + 26724 * 86400000).toISOString() }] },
@@ -1339,14 +1339,14 @@ if (previewMode && urlParams.get("giftReceipt") === "1") {
 
 const copybook = {
   ru: {
-    appName: "Link-Bot", refresh: "Обновить", retry: "Повторить", pageDashboard: "Личный кабинет", pageBuy: "Тарифы", pageGift: "Подарить", pageSetup: "Установить и настроить", pageSupport: "Поддержка", pageFaq: "FAQ", pageReferrals: "Реферальная система", pageServers: "Статус серверов", pageSettings: "Профиль", pageAdmin: "Админ панель",
+    appName: "Kront VPN", refresh: "Обновить", retry: "Повторить", pageDashboard: "Личный кабинет", pageBuy: "Тарифы", pageGift: "Подарить", pageSetup: "Установить и настроить", pageSupport: "Поддержка", pageFaq: "FAQ", pageReferrals: "Реферальная система", pageServers: "Статус серверов", pageSettings: "Профиль", pageAdmin: "Админ панель",
     navDashboard: "Главная", navBuy: "Тарифы", navSupport: "Поддержка", navSettings: "Профиль", navAdmin: "Админ", dashboardLabel: "Основная", activeSubscription: "Подписка активна", inactiveSubscription: "Подписка не активна", trialAvailable: "Пробный доступ",
     buySubscription: "Купить подписку", extend: "Продлить", setup: "Подключиться", activateTrial: "Активировать пробный", support: "Поддержка", openAccess: "Открыть доступ", copyAccess: "Скопировать ссылку",
-    loadingTitle: "Собираем ваш кабинет Link-Bot", loadingText: "Подтягиваем подписку, тарифы и быстрые действия.", openInTelegramTitle: "Откройте mini app из Telegram", openInTelegramText: "Telegram передаёт защищённые данные только внутри WebApp.", errorTitle: "Не удалось загрузить данные", subscriptionGateTitle: "Link-Bot Верификация", subscriptionGateLead: (channel) => `Чтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал ${channel}.`, subscriptionGateNews: "Там мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.", subscriptionGateHint: "После подписки нажмите кнопку ниже.", subscriptionGateOpen: "Link-Bot", subscriptionGateRetry: "✅ Я подписался",
+    loadingTitle: "Собираем ваш кабинет Kront VPN", loadingText: "Подтягиваем подписку, тарифы и быстрые действия.", openInTelegramTitle: "Откройте mini app из Telegram", openInTelegramText: "Telegram передаёт защищённые данные только внутри WebApp.", errorTitle: "Не удалось загрузить данные", subscriptionGateTitle: "Kront VPN Верификация", subscriptionGateLead: (channel) => `Чтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал ${channel}.`, subscriptionGateNews: "Там мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.", subscriptionGateHint: "После подписки нажмите кнопку ниже.", subscriptionGateOpen: "Kront VPN", subscriptionGateRetry: "✅ Я подписался",
     copied: "Ссылка скопирована", trialActivated: "Пробный период активирован", paymentOpened: "Окно оплаты открыто", invoiceOpened: "Инвойс открыт", paymentUnavailable: "Способ оплаты недоступен", noAccess: "Нет активной ссылки доступа", timeout: "Сервер не ответил вовремя", paymentCancelled: "Оплата отменена", paymentSuccess: "Успешная оплата", paymentPending: "Оплата ещё не завершена", resumePaymentTitle: "Оплата не завершена", resumePaymentText: "Продолжить оплату или вернуться в личный кабинет?", resumePaymentContinue: "Продолжить", resumePaymentReturn: "Вернуться в ЛК", paymentBrowserTitle: "Открыть оплату", paymentBrowserText: "Для СБП и банков на телефоне откроем YooKassa во внешнем браузере.", paymentBrowserOpen: "Открыть в браузере",
     invited: "Успешных приглашений", bonus: "Бонус", bonusDays: "Награда", expiresAt: "Истекает", quickAccess: "Быстрое подключение", shareReferral: "Поделиться", referralsHint: "Бонус начисляется только после того, как приглашённый пользователь оплатит любой тариф.", copyReferral: "Веб-ссылка", shareTelegram: "Telegram",
     selectTerm: "Выберите срок", selectedPlan: "Выбранный тариф", paymentMethod: "Способ оплаты", choosePaymentMethod: "Выберите способ оплаты", pay: "Оплатить", best: "Выгодно", perPeriod: "за период", savings: (v) => `-${v}%`, giftProfileHint: "Подарить доступ другому пользователю", giftRecipient: "Кому подарить", giftRecipientHint: "Введите Telegram username получателя", giftUsernamePlaceholder: "username", giftPeriod: "Период подписки", giftAction: "Подарить", giftInvalidUsername: "Введите корректный @username", giftSelf: "Нельзя подарить подписку себе", giftSentTitle: "Подарок отправлен", giftSentTo: (username) => `Вы отправили подарок @${username}`, giftSentExisting: "Пользователь уже знаком с ботом — подписка доставлена автоматически.", giftSentPending: "Если пользователь ещё не заходил в бота, подарок придёт сразу после команды /start.", giftShareHint: "Отправьте ему ссылку на подарок, если его ещё нет в боте.", giftLinkLabel: "Ссылка на подарок", giftCopy: "Копировать", giftCopied: "Ссылка на подарок скопирована", giftDone: "Готово", giftPaymentStarted: "Оплата подарка открыта",
-    starsNeedPriorPurchase: "Telegram Stars откроются после первой оплаты картой или криптой.", serverStatus: "Статус серверов", feedback: "Отзывы", channel: "Новости", tos: "Пользовательское соглашение", tosHint: "Условия использования сервиса Link-Bot", webVersion: "Открыть web-версию",
+    starsNeedPriorPurchase: "Telegram Stars откроются после первой оплаты картой или криптой.", serverStatus: "Статус серверов", feedback: "Отзывы", channel: "Новости", tos: "Пользовательское соглашение", tosHint: "Условия использования сервиса Kront VPN", webVersion: "Открыть web-версию",
     supportTitle: "Поддержка", supportHint: "Связь с поддержкой и полезные ссылки в одном месте.", newTicket: "Новое обращение", newTicketHint: "Связаться с поддержкой", supportTickets: "Открытые", supportLinks: "Полезное", noTickets: "Нет открытых обращений", noTicketsHint: "Когда появятся тикеты, они отобразятся здесь.",
     supportOpenTab: "Открытые", supportHistoryTab: "История", supportFaqTitle: "Часто задаваемые вопросы", supportFaqHint: "Быстрые ответы перед созданием обращения", supportAdminHint: "Новые обращения и ответы появляются здесь автоматически.", supportNoOpenTitle: "Нет открытых обращений", supportNoOpenHint: "Когда появятся тикеты, они отобразятся здесь.", supportNoHistoryTitle: "История обращений пуста", supportNoHistoryHint: "Закрытые обращения будут храниться здесь.", supportCreateTitle: "Создать обращение", supportSubjectLabel: "Тема", supportSubjectPlaceholder: "Кратко опишите проблему", supportMessageLabel: "Сообщение", supportMessagePlaceholder: "Опишите вашу проблему или вопрос подробно...", supportSendButton: "Отправить", supportCloseButton: "Закрыть обращение", supportClosedTitle: "Обращение закрыто", supportClosedHint: "История переписки сохранена в разделе истории.", supportReplyPlaceholder: "Напишите сообщение...", supportLoadingThread: "Загружаем переписку...",
     faqTitle: "Частые вопросы", faqHint: "Короткие ответы по подключению и оплате.", referralsTitle: "Реферальная программа", appearance: "Оформление", appearanceHint: "Переключайте светлую и тёмную тему внутри mini app.", theme: "Тема", darkTheme: "Тёмная", lightTheme: "Светлая", accentColor: "Акцент", settingsLinks: "Полезные ссылки", referralSystem: "Реферальная система",
@@ -1356,14 +1356,14 @@ const copybook = {
     paymentsTitle: "Платежи", paymentsHint: "Оплаты и история покупок", autopayTitle: "Автоплатёж", paymentHistory: "История покупок", paymentHistoryEmpty: "Покупок пока нет", agreementText: "", agreementLink: "Пользовательское соглашение", agreementRequired: "Подтвердите соглашение перед оплатой",
   },
   en: {
-    appName: "Link-Bot", refresh: "Refresh", retry: "Retry", pageDashboard: "Dashboard", pageBuy: "Plans", pageGift: "Gift", pageSetup: "Setup", pageSupport: "Support", pageFaq: "FAQ", pageReferrals: "Referrals", pageServers: "Server status", pageSettings: "Profile", pageAdmin: "Admin panel",
+    appName: "Kront VPN", refresh: "Refresh", retry: "Retry", pageDashboard: "Dashboard", pageBuy: "Plans", pageGift: "Gift", pageSetup: "Setup", pageSupport: "Support", pageFaq: "FAQ", pageReferrals: "Referrals", pageServers: "Server status", pageSettings: "Profile", pageAdmin: "Admin panel",
     navDashboard: "Home", navBuy: "Plans", navSupport: "Support", navSettings: "Profile", navAdmin: "Admin", dashboardLabel: "Main", activeSubscription: "Subscription active", inactiveSubscription: "Subscription inactive", trialAvailable: "Trial access",
     buySubscription: "Buy subscription", extend: "Extend", setup: "Setup", activateTrial: "Activate trial", support: "Support", openAccess: "Open access", copyAccess: "Copy link",
-    loadingTitle: "Building your Link-Bot dashboard", loadingText: "Loading subscription, plans and quick actions.", openInTelegramTitle: "Open this mini app from Telegram", openInTelegramText: "Telegram sends secure user data only inside the WebApp.", errorTitle: "Could not load data", subscriptionGateTitle: "Link-Bot Verification", subscriptionGateLead: (channel) => `To unlock the bot and mini app, subscribe to our Telegram channel ${channel}.`, subscriptionGateNews: "We post news, service updates, important changes and helpful announcements there.", subscriptionGateHint: "After subscribing, tap the button below.", subscriptionGateOpen: "Link-Bot", subscriptionGateRetry: "✅ I subscribed",
+    loadingTitle: "Building your Kront VPN dashboard", loadingText: "Loading subscription, plans and quick actions.", openInTelegramTitle: "Open this mini app from Telegram", openInTelegramText: "Telegram sends secure user data only inside the WebApp.", errorTitle: "Could not load data", subscriptionGateTitle: "Kront VPN Verification", subscriptionGateLead: (channel) => `To unlock the bot and mini app, subscribe to our Telegram channel ${channel}.`, subscriptionGateNews: "We post news, service updates, important changes and helpful announcements there.", subscriptionGateHint: "After subscribing, tap the button below.", subscriptionGateOpen: "Kront VPN", subscriptionGateRetry: "✅ I subscribed",
     copied: "Link copied", trialActivated: "Trial activated", paymentOpened: "Payment window opened", invoiceOpened: "Invoice opened", paymentUnavailable: "Payment method is unavailable", noAccess: "No active access link", timeout: "Server timeout", paymentCancelled: "Payment cancelled", paymentSuccess: "Payment successful", paymentPending: "Payment is not completed yet", resumePaymentTitle: "Payment not completed", resumePaymentText: "Continue payment or return to your dashboard?", resumePaymentContinue: "Continue", resumePaymentReturn: "Return to dashboard", paymentBrowserTitle: "Open payment", paymentBrowserText: "For SBP and mobile banking, we'll open YooKassa in your external browser.", paymentBrowserOpen: "Open in browser",
     invited: "Successful referrals", bonus: "Bonus", bonusDays: "Reward", expiresAt: "Expires", quickAccess: "Quick connection", shareReferral: "Share", referralsHint: "The reward is credited only after the invited user buys any subscription.", copyReferral: "Web link", shareTelegram: "Telegram",
     selectTerm: "Choose a term", selectedPlan: "Selected plan", paymentMethod: "Payment method", choosePaymentMethod: "Choose payment method", pay: "Pay", best: "Best", perPeriod: "per period", savings: (v) => `-${v}%`, giftProfileHint: "Give access to another user", giftRecipient: "Recipient", giftRecipientHint: "Enter the recipient's Telegram username", giftUsernamePlaceholder: "username", giftPeriod: "Subscription period", giftAction: "Send gift", giftInvalidUsername: "Enter a valid @username", giftSelf: "You cannot gift a subscription to yourself", giftSentTitle: "Gift sent", giftSentTo: (username) => `You sent a gift to @${username}`, giftSentExisting: "The user already knows the bot, so the subscription was delivered automatically.", giftSentPending: "If the user has not opened the bot yet, the gift will arrive after /start.", giftShareHint: "Send this gift link if they have not used the bot yet.", giftLinkLabel: "Gift link", giftCopy: "Copy", giftCopied: "Gift link copied", giftDone: "Done", giftPaymentStarted: "Gift payment opened",
-    starsNeedPriorPurchase: "Telegram Stars unlock after the first card or crypto payment.", serverStatus: "Server status", feedback: "Reviews", channel: "News", tos: "Terms of service", tosHint: "Rules and conditions for using Link-Bot", webVersion: "Open web version",
+    starsNeedPriorPurchase: "Telegram Stars unlock after the first card or crypto payment.", serverStatus: "Server status", feedback: "Reviews", channel: "News", tos: "Terms of service", tosHint: "Rules and conditions for using Kront VPN", webVersion: "Open web version",
     supportTitle: "Support", supportHint: "Support and useful links in one place.", newTicket: "New ticket", newTicketHint: "Contact support", supportTickets: "Open", supportLinks: "Useful", noTickets: "No open tickets", noTicketsHint: "Your tickets will appear here.",
     faqTitle: "FAQ", faqHint: "Quick answers about setup and payments.", referralsTitle: "Referral program", appearance: "Appearance", appearanceHint: "Switch between light and dark themes inside the mini app.", theme: "Theme", darkTheme: "Dark", lightTheme: "Light", accentColor: "Accent", settingsLinks: "Useful links", referralSystem: "Referral system",
     setupTitle: "Connection setup", setupHint: "Choose a device and connect in a couple taps.", setupMissing: "You need an active access link first", setupMissingHint: "Buy a plan or activate a trial to open the connection link.", instructions: "Guide", accessLink: "Access link", serverAll: "All", serverOnline: "Online", serverOffline: "Offline", serverTotal: "Total", serverStatusEmpty: "No nodes found", serverStatusHint: "Live node status from panel",
@@ -1543,14 +1543,14 @@ Object.assign(copybook.en, {
 
 copybook.fa = {
   ...copybook.en,
-  appName: "Link-Bot", refresh: "به‌روزرسانی", retry: "تلاش دوباره", pageDashboard: "حساب کاربری", pageBuy: "تعرفه‌ها", pageSetup: "نصب و راه‌اندازی", pageSupport: "پشتیبانی", pageFaq: "پرسش‌های متداول", pageReferrals: "دعوت دوستان", pageServers: "وضعیت سرورها", pageSettings: "پروفایل", pageAdmin: "پنل مدیریت",
+  appName: "Kront VPN", refresh: "به‌روزرسانی", retry: "تلاش دوباره", pageDashboard: "حساب کاربری", pageBuy: "تعرفه‌ها", pageSetup: "نصب و راه‌اندازی", pageSupport: "پشتیبانی", pageFaq: "پرسش‌های متداول", pageReferrals: "دعوت دوستان", pageServers: "وضعیت سرورها", pageSettings: "پروفایل", pageAdmin: "پنل مدیریت",
   navDashboard: "خانه", navBuy: "تعرفه‌ها", navSupport: "پشتیبانی", navSettings: "پروفایل", navAdmin: "مدیریت", dashboardLabel: "اصلی", activeSubscription: "اشتراک فعال است", inactiveSubscription: "اشتراک غیرفعال است", trialAvailable: "دسترسی آزمایشی",
   buySubscription: "خرید اشتراک", extend: "تمدید", setup: "اتصال", activateTrial: "فعال‌کردن آزمایشی", support: "پشتیبانی", openAccess: "باز کردن دسترسی", copyAccess: "کپی لینک",
-  loadingTitle: "در حال آماده‌سازی حساب Link-Bot", loadingText: "اشتراک، تعرفه‌ها و گزینه‌های سریع در حال بارگذاری است.", openInTelegramTitle: "مینی‌اپ را از Telegram باز کنید", openInTelegramText: "Telegram اطلاعات امن کاربر را فقط داخل WebApp ارسال می‌کند.", errorTitle: "بارگذاری اطلاعات انجام نشد", subscriptionGateTitle: "تأیید Link-Bot", subscriptionGateLead: (channel) => `برای باز شدن ربات و مینی‌اپ، در کانال Telegram ما ${channel} عضو شوید.`, subscriptionGateNews: "خبرها، به‌روزرسانی‌ها و اطلاعیه‌های مهم در این کانال منتشر می‌شود.", subscriptionGateHint: "پس از عضویت، دکمه زیر را بزنید.", subscriptionGateOpen: "Link-Bot", subscriptionGateRetry: "✅ عضو شدم",
+  loadingTitle: "در حال آماده‌سازی حساب Kront VPN", loadingText: "اشتراک، تعرفه‌ها و گزینه‌های سریع در حال بارگذاری است.", openInTelegramTitle: "مینی‌اپ را از Telegram باز کنید", openInTelegramText: "Telegram اطلاعات امن کاربر را فقط داخل WebApp ارسال می‌کند.", errorTitle: "بارگذاری اطلاعات انجام نشد", subscriptionGateTitle: "تأیید Kront VPN", subscriptionGateLead: (channel) => `برای باز شدن ربات و مینی‌اپ، در کانال Telegram ما ${channel} عضو شوید.`, subscriptionGateNews: "خبرها، به‌روزرسانی‌ها و اطلاعیه‌های مهم در این کانال منتشر می‌شود.", subscriptionGateHint: "پس از عضویت، دکمه زیر را بزنید.", subscriptionGateOpen: "Kront VPN", subscriptionGateRetry: "✅ عضو شدم",
   copied: "لینک کپی شد", trialActivated: "دوره آزمایشی فعال شد", paymentOpened: "صفحه پرداخت باز شد", invoiceOpened: "فاکتور باز شد", paymentUnavailable: "این روش پرداخت در دسترس نیست", noAccess: "لینک دسترسی فعالی وجود ندارد", timeout: "زمان پاسخ سرور تمام شد", paymentCancelled: "پرداخت لغو شد", paymentSuccess: "پرداخت موفق بود", paymentPending: "پرداخت هنوز تکمیل نشده است", resumePaymentTitle: "پرداخت تکمیل نشده", resumePaymentText: "پرداخت را ادامه می‌دهید یا به حساب کاربری برمی‌گردید؟", resumePaymentContinue: "ادامه", resumePaymentReturn: "بازگشت به حساب", paymentBrowserTitle: "باز کردن پرداخت", paymentBrowserText: "برای پرداخت بانکی، YooKassa در مرورگر خارجی باز می‌شود.", paymentBrowserOpen: "باز کردن در مرورگر",
   invited: "دعوت‌های موفق", bonus: "پاداش", bonusDays: "هدیه", expiresAt: "پایان", quickAccess: "اتصال سریع", shareReferral: "اشتراک‌گذاری", referralsHint: "پاداش زمانی ثبت می‌شود که دوست دعوت‌شده یک اشتراک بخرد.", copyReferral: "لینک وب", shareTelegram: "Telegram",
   selectTerm: "مدت را انتخاب کنید", selectedPlan: "تعرفه انتخاب‌شده", paymentMethod: "روش پرداخت", choosePaymentMethod: "روش پرداخت را انتخاب کنید", pay: "پرداخت", best: "پیشنهاد ویژه", perPeriod: "برای این دوره", savings: (v) => `${v}٪ تخفیف`,
-  starsNeedPriorPurchase: "Telegram Stars پس از اولین پرداخت با کارت یا ارز دیجیتال فعال می‌شود.", serverStatus: "وضعیت سرورها", feedback: "دیدگاه‌ها", channel: "اخبار", tos: "شرایط استفاده", tosHint: "قوانین و شرایط استفاده از Link-Bot", webVersion: "باز کردن نسخه وب",
+  starsNeedPriorPurchase: "Telegram Stars پس از اولین پرداخت با کارت یا ارز دیجیتال فعال می‌شود.", serverStatus: "وضعیت سرورها", feedback: "دیدگاه‌ها", channel: "اخبار", tos: "شرایط استفاده", tosHint: "قوانین و شرایط استفاده از Kront VPN", webVersion: "باز کردن نسخه وب",
   supportTitle: "پشتیبانی", supportHint: "پشتیبانی و لینک‌های کاربردی در یک بخش.", newTicket: "درخواست جدید", newTicketHint: "ارتباط با پشتیبانی", supportTickets: "باز", supportLinks: "کاربردی", noTickets: "درخواست بازی وجود ندارد", noTicketsHint: "درخواست‌های شما در اینجا نمایش داده می‌شوند.",
   supportOpenTab: "باز", supportHistoryTab: "تاریخچه", supportFaqTitle: "پرسش‌های متداول", supportFaqHint: "پاسخ‌های سریع پیش از ایجاد درخواست", supportAdminHint: "درخواست‌ها و پاسخ‌های جدید به‌صورت خودکار اینجا نمایش داده می‌شوند.", supportNoOpenTitle: "درخواست بازی وجود ندارد", supportNoOpenHint: "درخواست جدید در اینجا نمایش داده می‌شود.", supportNoHistoryTitle: "تاریخچه درخواست‌ها خالی است", supportNoHistoryHint: "درخواست‌های بسته‌شده اینجا نگه‌داری می‌شوند.", supportCreateTitle: "ایجاد درخواست", supportSubjectLabel: "موضوع", supportSubjectPlaceholder: "مشکل را کوتاه توضیح دهید", supportMessageLabel: "پیام", supportMessagePlaceholder: "مشکل یا پرسش خود را با جزئیات بنویسید...", supportSendButton: "ارسال", supportCloseButton: "بستن درخواست", supportClosedTitle: "درخواست بسته شد", supportClosedHint: "گفت‌وگو در تاریخچه ذخیره شده است.", supportReplyPlaceholder: "پیام خود را بنویسید...", supportLoadingThread: "در حال بارگذاری گفت‌وگو...",
   faqTitle: "پرسش‌های متداول", faqHint: "پاسخ‌های کوتاه درباره اتصال و پرداخت.", referralsTitle: "برنامه دعوت دوستان", appearance: "ظاهر", appearanceHint: "حالت روشن یا تیره مینی‌اپ را انتخاب کنید.", theme: "پوسته", darkTheme: "تیره", lightTheme: "روشن", accentColor: "رنگ تأکیدی", settingsLinks: "لینک‌های کاربردی", referralSystem: "سیستم دعوت دوستان",
@@ -2288,9 +2288,9 @@ function buildPreviewRuntimeSettings() {
 		maintenance: { enabled: false, titleRu: "\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b", textRu: "", reasonRu: "" },
 		features,
 		content: {
-			brandName: "Link-Bot", adminContact: "", logoUrl: previewPayload.brand.logoUrl, startTextRu: "", startImage: "", copy: { ru: {} }, faq: { ru: [] }, links: deepClone(previewPayload.links), customLinks: [], profileButtons: {}, legalDocuments: {},
-			webPage: { title: "Link-Bot", description: "Link-Bot Mini App", faviconUrl: BRAND_MARK_PATH },
-			verification: { text: "", banner: "", channelButton: { text: "Link-Bot", iconCustomEmojiId: "", style: "" }, confirmButton: { text: "Я подписался", iconCustomEmojiId: "", style: "" }, checkFailedText: "", notSubscribedText: "", verifiedText: "" },
+			brandName: "Kront VPN", adminContact: "", logoUrl: previewPayload.brand.logoUrl, startTextRu: "", startImage: "", copy: { ru: {} }, faq: { ru: [] }, links: deepClone(previewPayload.links), customLinks: [], profileButtons: {}, legalDocuments: {},
+			webPage: { title: "Kront VPN", description: "Kront VPN Mini App", faviconUrl: BRAND_MARK_PATH },
+			verification: { text: "", banner: "", channelButton: { text: "Kront VPN", iconCustomEmojiId: "", style: "" }, confirmButton: { text: "Я подписался", iconCustomEmojiId: "", style: "" }, checkFailedText: "", notSubscribedText: "", verifiedText: "" },
 			startMenu: { notificationsButton: { enabled: false, text: "Уведомления: вкл.", iconCustomEmojiId: "", style: "success" }, notificationsOffButton: { text: "Уведомления: выкл.", iconCustomEmojiId: "", style: "danger" }, trialButton: { text: "Попробовать бесплатно", iconCustomEmojiId: "5276422526350681413", style: "" }, dashboardButton: { text: "Вход", iconCustomEmojiId: "5278413853577734640", style: "" }, plansButton: { text: "Тарифы", iconCustomEmojiId: "5206626000665868017", style: "" }, supportButton: { text: "Чат с поддержкой", iconCustomEmojiId: "5206222720416643915", style: "" } },
 			trial: { banner: "", text: "<b>Пробный период</b>\n\nБесплатно протестируйте сервис перед покупкой.", activateButton: { text: "Активировать бесплатно", iconCustomEmojiId: "", style: "" }, activatedBanner: "", activatedText: "<b>Пробный период активирован!</b>\n\nОцените скорость и стабильность сервиса.", connectButton: { text: "Подписка", iconCustomEmojiId: "", style: "" } },
 			commerce: { banner: "", tariffsText: "", paymentMethodsText: "", paymentReadyText: "", yookassaButton: { text: "СБП | Карта", iconCustomEmojiId: "5192678313415434135", style: "" }, cryptoButton: { text: "CryptoPay", iconCustomEmojiId: "5195058841988914267", style: "" }, starsButton: { text: "Telegram Stars", iconCustomEmojiId: "5242644275014951846", style: "" }, payButton: { text: "Оплатить", iconCustomEmojiId: "5206401524200145033", style: "" }, backButton: { text: "Назад", iconCustomEmojiId: "5877629862306385808", style: "" }, successText: "", successBanner: "", successButton: { text: "Личный кабинет", iconCustomEmojiId: "5278413853577734640", style: "" } },
@@ -2829,7 +2829,7 @@ function seedEditableCopy(settings) {
 	if (!Array.isArray(settings.subPage.priorityBuiltIns)) settings.subPage.priorityBuiltIns = [];
 	if (!Array.isArray(settings.subPage.clients)) settings.subPage.clients = [];
 	if (!settings.content.webPage) {
-		const title = String(settings.content.brandName || "Link-Bot").trim() || "Link-Bot";
+		const title = String(settings.content.brandName || "Kront VPN").trim() || "Kront VPN";
 		settings.content.webPage = { title, description: `${title} Mini App`, faviconUrl: BRAND_MARK_PATH };
 	}
 	const existing = settings.content.copy?.ru || {};
@@ -3024,7 +3024,7 @@ function deviceText() {
 function reviewsText() {
 	if (state.locale === "fa") {
 		return {
-			leaveReview: "ثبت دیدگاه", thanksTitle: "دیدگاه شما منتشر شده است", viewMine: "مشاهده دیدگاه من", emptyTitle: "هنوز دیدگاهی ثبت نشده", emptyHint: "اولین نفری باشید که Link-Bot را ارزیابی می‌کند.", ratingLabel: "امتیاز", commentLabel: "دیدگاه", commentPlaceholder: "تجربه خود و موارد قابل بهبود را بنویسید...", submit: "ارسال دیدگاه", ratingRequired: "امتیازی بین ۱ تا ۵ انتخاب کنید", alreadyReviewed: "هر کاربر فقط یک دیدگاه می‌تواند ثبت کند", rewardHint: reviewRewardHint(), rewardToast: "دیدگاه ثبت شد", reviewsCount: (count) => `${formatNumber(count, "fa")} دیدگاه`, mine: "دیدگاه من", delete: "حذف دیدگاه", deleteSuccess: "دیدگاه حذف شد",
+			leaveReview: "ثبت دیدگاه", thanksTitle: "دیدگاه شما منتشر شده است", viewMine: "مشاهده دیدگاه من", emptyTitle: "هنوز دیدگاهی ثبت نشده", emptyHint: "اولین نفری باشید که Kront VPN را ارزیابی می‌کند.", ratingLabel: "امتیاز", commentLabel: "دیدگاه", commentPlaceholder: "تجربه خود و موارد قابل بهبود را بنویسید...", submit: "ارسال دیدگاه", ratingRequired: "امتیازی بین ۱ تا ۵ انتخاب کنید", alreadyReviewed: "هر کاربر فقط یک دیدگاه می‌تواند ثبت کند", rewardHint: reviewRewardHint(), rewardToast: "دیدگاه ثبت شد", reviewsCount: (count) => `${formatNumber(count, "fa")} دیدگاه`, mine: "دیدگاه من", delete: "حذف دیدگاه", deleteSuccess: "دیدگاه حذف شد",
 		};
 	}
   if (state.locale === "en") {
@@ -3033,7 +3033,7 @@ function reviewsText() {
       thanksTitle: "Your review is published",
       viewMine: "View my review",
       emptyTitle: "No reviews yet",
-      emptyHint: "Be the first to rate Link-Bot.",
+      emptyHint: "Be the first to rate Kront VPN.",
       ratingLabel: "Rating",
       commentLabel: "Comment",
       commentPlaceholder: "Tell others what you liked or what can be improved...",
@@ -3054,7 +3054,7 @@ function reviewsText() {
     thanksTitle: "Ваш отзыв уже опубликован",
     viewMine: "Посмотреть мой отзыв",
     emptyTitle: "Пока нет отзывов",
-    emptyHint: "Станьте первым и оцените Link-Bot.",
+    emptyHint: "Станьте первым и оцените Kront VPN.",
     ratingLabel: "Оценка",
     commentLabel: "Комментарий",
     commentPlaceholder: "Напишите, что вам понравилось или что можно улучшить...",
@@ -4316,7 +4316,7 @@ function mountCabinetShell(markup) {
 			canOverviewUsers: canAdmin("users"), canOverviewFinance: canAdmin("finance"),
 			refreshOverview: () => refreshAdminOverview({force:true}),
 		setOverviewDays: setAdminOverviewDays,
-			brand: state.data?.brand?.name || "Link-Bot", logo: state.data?.brand?.logoUrl, logout: Boolean(renderBrowserLogoutButton()),
+			brand: state.data?.brand?.name || "Kront VPN", logo: state.data?.brand?.logoUrl, logout: Boolean(renderBrowserLogoutButton()),
 			save: state.currentPage === "admin" && ADMIN_SAVE_SECTIONS.has(state.adminSection),
 			dirty: adminEditorSaveState().dirty, busy: adminEditorSaveState().busy,
 			plans: (state.adminSettingsDraft?.plans || state.data?.admin?.settings?.plans || []).map(plan => ({...plan})),
@@ -5336,7 +5336,7 @@ function renderAdminBotUpdater(data) {
  const updater = data.updater || {};
  const running = state.adminBotUpdateBusy || updater.state === "running";
  const status = running ? (state.adminBotUpdateConnecting ? "Бот перезапускается. Ожидаем соединение…" : updater.stage || "Запускаем обновление…") : updater.message || "";
- if (state.adminBotUpdateConfirm && !running && updater.available) return `<div class="admin-bot-update admin-bot-update--confirm" role="group" aria-label="Подтверждение обновления"><strong>Обновить Link-Bot?</strong><p>Установим изменения из GitHub и перезапустим бота. На это время он будет недоступен.</p><div class="admin-bot-update__actions"><button type="button" data-action="admin-bot-update-cancel">Отмена</button><button type="button" class="admin-bot-update__start" data-action="admin-bot-update-start">Обновить</button></div></div>`;
+ if (state.adminBotUpdateConfirm && !running && updater.available) return `<div class="admin-bot-update admin-bot-update--confirm" role="group" aria-label="Подтверждение обновления"><strong>Обновить Kront VPN?</strong><p>Установим изменения из GitHub и перезапустим бота. На это время он будет недоступен.</p><div class="admin-bot-update__actions"><button type="button" data-action="admin-bot-update-cancel">Отмена</button><button type="button" class="admin-bot-update__start" data-action="admin-bot-update-start">Обновить</button></div></div>`;
  return `<div class="admin-bot-update ${running ? "is-running" : ""}"><button type="button" class="admin-bot-update__start" data-action="admin-bot-update-confirm" ${running || !updater.available ? "disabled" : ""}>${icon("refresh")}${running ? "Обновляем бота…" : "Обновить бота"}</button>${status ? `<p role="status" class="${updater.state === "failed" ? "is-error" : ""}">${escapeHtml(status)}</p>` : ""}</div>`;
 }
 
@@ -5419,7 +5419,7 @@ function renderAdminStatusPage() {
 			${renderAdminStatusService("Бот", bot, "server", [["Время работы", adminStatusDuration(bot.uptimeSeconds)], ["Память Go", adminStatusMemory(data.heapBytes)]])}
 			${renderAdminStatusService("Панель Remnawave", panel, "server", [["Время работы сервера", adminStatusDuration(panel.uptimeSeconds)], ["Память сервера", Number(panel.memoryTotalBytes) ? `${adminStatusMemory(panel.memoryUsedBytes)} / ${adminStatusMemory(panel.memoryTotalBytes)}` : "—"]])}
 		</div>
-		<section class="admin-status__section"><h3>Сборка и обновление</h3><div class="admin-status__rows"><div><span>Версия бота</span><strong>${escapeHtml(data.version || "dev")}</strong></div><div><span>Последний релиз</span><strong>${escapeHtml(update.latestVersion || "—")}</strong></div><div><span>Обновление</span><strong class="${update.state === "available" ? "is-update" : ""}">${escapeHtml(updateText)}</strong></div>${builtText ? `<div><span>Собрано</span><strong>${escapeHtml(builtText)}</strong></div>` : ""}${data.commit && data.commit !== "none" ? `<div><span>Коммит</span><strong>${escapeHtml(data.commit)}</strong></div>` : ""}</div>${update.state === "available" ? `<button class="admin-status__release" type="button" data-action="open-link" data-value="${escapeAttribute(update.url || "https://github.com/bruhxax/Link-Bot/releases/latest")}">${update.kind === "commit" ? "Посмотреть изменения" : "Посмотреть релиз"}${icon("chevronRight")}</button>` : ""}${renderAdminBotUpdater(data)}</section>
+		<section class="admin-status__section"><h3>Сборка и обновление</h3><div class="admin-status__rows"><div><span>Версия бота</span><strong>${escapeHtml(data.version || "dev")}</strong></div><div><span>Последний релиз</span><strong>${escapeHtml(update.latestVersion || "—")}</strong></div><div><span>Обновление</span><strong class="${update.state === "available" ? "is-update" : ""}">${escapeHtml(updateText)}</strong></div>${builtText ? `<div><span>Собрано</span><strong>${escapeHtml(builtText)}</strong></div>` : ""}${data.commit && data.commit !== "none" ? `<div><span>Коммит</span><strong>${escapeHtml(data.commit)}</strong></div>` : ""}</div>${update.state === "available" ? `<button class="admin-status__release" type="button" data-action="open-link" data-value="${escapeAttribute(update.url || "https://github.com/bruhxax/Kront VPN/releases/latest")}">${update.kind === "commit" ? "Посмотреть изменения" : "Посмотреть релиз"}${icon("chevronRight")}</button>` : ""}${renderAdminBotUpdater(data)}</section>
 		<section class="admin-status__section"><h3>Обновление Remnawave</h3><div class="admin-status__rows"><div><span>Версия панели</span><strong>${escapeHtml(panelUpdate.currentVersion || "—")}</strong></div><div><span>Последний релиз</span><strong>${escapeHtml(panelUpdate.latestVersion || "—")}</strong></div><div><span>Обновление</span><strong class="${panelUpdate.state === "available" ? "is-update" : ""}">${escapeHtml(panelUpdateText)}</strong></div></div>${panelUpdate.state === "available" ? `<button class="admin-status__release" type="button" data-action="open-link" data-value="${escapeAttribute(panelUpdate.url || "https://github.com/remnawave/panel/releases/latest")}">Посмотреть релиз${icon("chevronRight")}</button>` : ""}</section>
 		<section class="admin-status__section"><h3>Система</h3><div class="admin-status__rows"><div><span>База данных</span>${databaseDisplay}</div><div><span>Выделено Go</span><strong>${adminStatusMemory(data.processBytes)}</strong></div><div><span>Горутины</span><strong>${Number(data.goroutines || 0).toLocaleString("ru-RU")}</strong></div></div></section>
 	</div></section>`;
@@ -5843,7 +5843,7 @@ async function currentAdminPushSubscription() {
 	return withWebPushTimeout(
 		registration.pushManager.getSubscription(),
 		WEB_PUSH_WORKER_TIMEOUT_MS,
-		"iPhone не ответил на запрос уведомлений. Полностью закройте Link-Bot, откройте снова и повторите.",
+		"iPhone не ответил на запрос уведомлений. Полностью закройте Kront VPN, откройте снова и повторите.",
 		"push_subscription_state_timeout",
 	);
 }
@@ -7654,7 +7654,7 @@ function renderAdminTrialContent() {
 
 function renderAdminWebPageContent() {
 	return `<section class="admin-editor__section"><h3>Вкладка браузера</h3>
-		${renderAdminSettingField("Название страницы", "content.webPage.title", { placeholder: "Link-Bot" })}
+		${renderAdminSettingField("Название страницы", "content.webPage.title", { placeholder: "Kront VPN" })}
 		${renderAdminSettingField("Описание страницы", "content.webPage.description", { textarea: true, rows: 3, placeholder: "Краткое описание сервиса" })}
 	</section>
 	<section class="admin-editor__section"><h3>Иконка сайта</h3>${renderAdminFaviconField()}</section>`;
@@ -7666,7 +7666,7 @@ function renderAdminFaviconField() {
 	const busy = state.adminBusy === "upload-favicon";
 	const isDefault = current === BRAND_MARK_PATH || current.startsWith(`${BRAND_MARK_PATH}?`);
 	const source = current.startsWith("/mini-app/uploads/")
-		? "Файл загружен в Link-Bot"
+		? "Файл загружен в Kront VPN"
 		: isDefault ? "Используется стандартная иконка" : "Используется внешняя ссылка";
 	return `<div class="admin-logo-field admin-favicon-field">
 		<div class="admin-logo-field__main">
@@ -7693,7 +7693,7 @@ function renderAdminLogoField() {
 	const busy = state.adminBusy === "upload-logo";
 	const isDefault = current === BRAND_MARK_PATH || current.startsWith(`${BRAND_MARK_PATH}?`);
 	const source = current.startsWith("/mini-app/uploads/")
-		? "Файл загружен в Link-Bot"
+		? "Файл загружен в Kront VPN"
 		: isDefault
 			? "Используется стандартный логотип"
 			: "Используется внешняя ссылка";
@@ -8966,7 +8966,7 @@ function renderAdminLayoutPreview(item, label, iconName) {
 	if (key === "support:tabs") return `<div class="admin-ui-preview-tabs"><b>\u041e\u0442\u043a\u0440\u044b\u0442\u044b\u0435</b><span>\u0418\u0441\u0442\u043e\u0440\u0438\u044f</span></div>`;
 	if (key === "support:tickets") return `<div class="admin-ui-preview-empty">${icon("openTickets")}<strong>\u041d\u0435\u0442 \u043e\u0442\u043a\u0440\u044b\u0442\u044b\u0445 \u043e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u0439</strong><span>\u0417\u0434\u0435\u0441\u044c \u043f\u043e\u044f\u0432\u044f\u0442\u0441\u044f \u0432\u0430\u0448\u0438 \u0442\u0438\u043a\u0435\u0442\u044b</span></div>`;
 	if (item.area === "navigation") return `<div class="admin-ui-preview-nav">${icon(iconName)}<span>${escapeHtml(label)}</span></div>`;
-	return `<div class="admin-ui-preview-row"><span>${icon(iconName)}</span><span><strong>${escapeHtml(label)}</strong><small>Link-Bot</small></span><i>${icon("chevronRight")}</i></div>`;
+	return `<div class="admin-ui-preview-row"><span>${icon(iconName)}</span><span><strong>${escapeHtml(label)}</strong><small>Kront VPN</small></span><i>${icon("chevronRight")}</i></div>`;
 }
 
 function renderAdminVisualPlans() {
@@ -9829,7 +9829,7 @@ function renderDashboardPage() {
 
 	const blocks = {
 		...(subscriptionSwitcher ? { subscription_switcher: subscriptionSwitcher } : {}),
-		brand: `<div class="hero-center hero-center--brand">${renderLayoutDetail("dashboard", "logo", `<div class="hero-brand" style="--runtime-logo-width:${Math.max(48, Math.min(220, Number(getRuntimeSettings()?.layout?.logoWidth || 188)))}px"><img src="${escapeAttribute(resolveBrandMarkURL(state.data.brand.logoUrl))}" data-brand-logo alt="${escapeAttribute(state.data.brand.name || "Link-Bot")}" loading="eager" draggable="false"></div>`, "runtime-detail-item--logo")}${renderLayoutDetail("dashboard", "username", `<div class="hero-handle">${escapeHtml(avatarLabel)}</div>`, "runtime-detail-item--username")}</div>`,
+		brand: `<div class="hero-center hero-center--brand">${renderLayoutDetail("dashboard", "logo", `<div class="hero-brand" style="--runtime-logo-width:${Math.max(48, Math.min(220, Number(getRuntimeSettings()?.layout?.logoWidth || 188)))}px"><img src="${escapeAttribute(resolveBrandMarkURL(state.data.brand.logoUrl))}" data-brand-logo alt="${escapeAttribute(state.data.brand.name || "Kront VPN")}" loading="eager" draggable="false"></div>`, "runtime-detail-item--logo")}${renderLayoutDetail("dashboard", "username", `<div class="hero-handle">${escapeHtml(avatarLabel)}</div>`, "runtime-detail-item--username")}</div>`,
 		subscription: active ? `<div class="dashboard-compact"><div class="card card--status card--status-compact"><div class="sub-bar sub-bar--status"><div class="sub-bar__row">${renderLayoutDetail("dashboard", "plan_name", `<div class="sub-bar__name">${title}</div>`, "runtime-detail-item--status runtime-detail-item--plan")}${renderLayoutDetail("dashboard", "expires", `<div class="sub-bar__date"><span class="sub-bar__date-icon">${icon("calendarDays")}</span><span>${expires}</span></div>`, "runtime-detail-item--status")}</div><div class="sub-bar__row sub-bar__row--pills">${trafficLabel ? renderLayoutDetail("dashboard", "traffic", `<span class="sub-pill"><span class="sub-pill__icon">${icon("chartLine")}</span><span class="runtime-editable-text">${escapeHtml(trafficLabel)}</span></span>`, "runtime-detail-item--pill") : ""}${deviceLabel ? renderLayoutDetail("dashboard", "devices", `<button class="sub-pill sub-pill--button" type="button" data-action="open-devices-modal"><span class="runtime-editable-text">${escapeHtml(deviceLabel)}</span><span class="sub-pill__edit">${icon("userPen")}</span></button>`, "runtime-detail-item--pill") : ""}</div></div></div></div>` : "",
 		actions: `<div class="dashboard-compact">${actionStack}</div>`,
 		...(promoWidgetVisible ? { promo_widget: renderPromoGiftWidget(promoWidgetItem) } : {}),
@@ -11195,7 +11195,7 @@ function splitDocumentText(value) {
 
 function replaceRuntimeBrandTokens(source) {
   const content = getRuntimeSettings()?.content || {};
-  const brandName = String(content.brandName || state.data?.brand?.name || "Link-Bot").trim() || "Link-Bot";
+  const brandName = String(content.brandName || state.data?.brand?.name || "Kront VPN").trim() || "Kront VPN";
   const supportURL = String(content.links?.support || state.data?.links?.support || "").trim();
   const supportMatch = supportURL.match(/(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{5,32})/i);
   const adminContact = String(content.adminContact || (supportMatch ? `@${supportMatch[1]}` : "@your_support_username")).trim();
@@ -11203,7 +11203,7 @@ function replaceRuntimeBrandTokens(source) {
     if (Array.isArray(value)) return value.map(replaceTokens);
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceTokens(item)]));
     if (typeof value !== "string") return value;
-    return value.replaceAll("Link-Bot", brandName).replaceAll("@your_support_username", adminContact);
+    return value.replaceAll("Kront VPN", brandName).replaceAll("@your_support_username", adminContact);
   };
   return replaceTokens(source);
 }
@@ -11374,7 +11374,7 @@ function renderStateScreen(kind, message = "", meta = null) {
   }
   if (kind === "subscription") {
     const copy = t();
-    const channelTitle = String(meta?.channelTitle || copy.appName || "Link-Bot");
+    const channelTitle = String(meta?.channelTitle || copy.appName || "Kront VPN");
     const channelUrl = String(meta?.channelUrl || "");
     const imageUrl = String(meta?.imageUrl || "");
     return `
@@ -11399,7 +11399,7 @@ function renderStateScreen(kind, message = "", meta = null) {
   }
 	if (kind === "blocked") {
 		const reason = String(meta?.reason || "").trim() || localizedText("Не указана", "Not specified", "مشخص نشده");
-		const brandName = getRuntimeSettings()?.content?.brandName || "Link-Bot";
+		const brandName = getRuntimeSettings()?.content?.brandName || "Kront VPN";
 		return `<div class="state-screen state-screen--access state-screen--blocked"><section class="access-state" aria-labelledby="access-state-title"><div class="access-state__icon" aria-hidden="true">${icon("accessLink")}</div><h1 class="access-state__title" id="access-state-title">${escapeHtml(brandName)}</h1><p class="access-state__text">${escapeHtml(localizedText("Доступ ограничен", "Access restricted", "دسترسی محدود است"))}</p><p class="access-state__reason"><span>${escapeHtml(localizedText("Причина:", "Reason:", "دلیل:"))}</span> ${escapeHtml(reason)}</p></section></div>`;
 	}
   return `<div class="state-screen"><div class="state-card"><div class="state-card__eyebrow">${escapeHtml(t().appName)}</div><div class="state-card__title">${escapeHtml(t().errorTitle)}</div><div class="state-card__text">${escapeHtml(message)}</div><button class="btn mt-16" type="button" data-action="refresh">${icon("refresh")}${escapeHtml(t().retry)}</button>${adminEntry ? renderBrowserLogoutButton("mt-16") : ""}</div></div>`;
@@ -14501,7 +14501,7 @@ async function uploadAdminLogo(file) {
 		body.append("logo", file, file.name || "logo");
 		const response = await postForm("/api/mini-app/admin/logo/upload", body);
 		const logoURL = String(response?.data?.url || "").trim();
-		if (!logoURL) throw new Error("Link-Bot не вернул адрес логотипа");
+		if (!logoURL) throw new Error("Kront VPN не вернул адрес логотипа");
 		state.adminSettingsDraft.content.logoUrl = logoURL;
 		state.adminSettingsDirty = true;
 		state.adminBusy = "";
@@ -14582,7 +14582,7 @@ async function uploadAdminFavicon(file) {
 		body.append("favicon", file, file.name || "favicon");
 		const response = await postForm("/api/mini-app/admin/favicon/upload", body);
 		const faviconURL = String(response?.data?.url || "").trim();
-		if (!faviconURL) throw new Error("Link-Bot не вернул адрес favicon");
+		if (!faviconURL) throw new Error("Kront VPN не вернул адрес favicon");
 		state.adminSettingsDraft.content.webPage.faviconUrl = faviconURL;
 		state.adminSettingsDirty = true;
 		state.adminBusy = "";
@@ -19556,7 +19556,7 @@ function applyAppearance() {
 function applyWebPageMetadata() {
 	const content = getRuntimeSettings()?.content || {};
 	const page = content.webPage || {};
-	const title = String(page.title || content.brandName || "Link-Bot").trim() || "Link-Bot";
+	const title = String(page.title || content.brandName || "Kront VPN").trim() || "Kront VPN";
 	const appName = String(content.brandName || title).trim() || title;
 	const description = String(page.description || `${title} Mini App`).trim();
 	const faviconURL = resolveBrandMarkURL(page.faviconUrl || BRAND_MARK_PATH);
@@ -20763,7 +20763,7 @@ function getDashboardUserLabel() {
   const firstName = String(state.data?.user?.firstName || "").trim();
   if (firstName) return firstName;
 
-  return String(state.data?.brand?.name || "Link-Bot").trim();
+  return String(state.data?.brand?.name || "Kront VPN").trim();
 }
 
 function getDashboardAvatarFallback() {

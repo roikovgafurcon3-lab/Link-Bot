@@ -625,12 +625,12 @@ func DefaultSettings() Settings {
 		Features:    features,
 		NodeMonitor: NodeMonitorSettings{OfflineMinutes: 3},
 		Content: ContentSettings{
-			BrandName:    "Link-Bot",
+			BrandName:    "Kront VPN",
 			AdminContact: "",
 			LogoURL:      "/mini-app/assets/brand-mark.png",
 			WebPage: WebPageSettings{
-				Title:       "Link-Bot",
-				Description: "Link-Bot Mini App",
+				Title:       "Kront VPN",
+				Description: "Kront VPN Mini App",
 				FaviconURL:  "/mini-app/assets/brand-mark.png",
 			},
 			StartImage: "",
@@ -648,10 +648,10 @@ func DefaultSettings() Settings {
 			ProfileButtons: map[string]ProfileButtonSettings{},
 			LegalDocuments: map[string]LegalDocumentSettings{},
 			Verification: TelegramVerificationSettings{
-				Text:   "<b>Link-Bot Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
+				Text:   "<b>Kront VPN Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
 				Banner: "",
 				ChannelButton: TelegramButtonSettings{
-					Text: "Link-Bot",
+					Text: "Kront VPN",
 				},
 				ConfirmButton: TelegramButtonSettings{
 					Text: "✅ Я подписался",
@@ -917,9 +917,9 @@ func LocalizeTelegramDefaults(content ContentSettings, language string) ContentS
 	content.Trial.ActivateButton.Text = localized(content.Trial.ActivateButton.Text, trialDefaults.ActivateButton.Text, "Activate trial version", "فعال‌کردن دوره آزمایشی")
 	content.Trial.ConnectButton.Text = localized(content.Trial.ConnectButton.Text, trialDefaults.ConnectButton.Text, "🔌 Connect", "🔌 اتصال")
 	content.Verification.Text = localized(content.Verification.Text,
-		"<b>Link-Bot Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
-		"<b>Link-Bot Verification</b>\n\nTo open the bot and Mini App, subscribe to our Telegram channel <b>%s</b>.\n\nWe publish service news, updates and important notices there.\n\nAfter subscribing, tap the button below.",
-		"<b>تأیید Link-Bot</b>\n\nبرای دسترسی به ربات و Mini App، در کانال Telegram ما <b>%s</b> عضو شوید.\n\nخبرها، به‌روزرسانی‌ها و اطلاعیه‌های مهم در آنجا منتشر می‌شود.\n\nپس از عضویت، دکمه زیر را بزنید.")
+		"<b>Kront VPN Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
+		"<b>Kront VPN Verification</b>\n\nTo open the bot and Mini App, subscribe to our Telegram channel <b>%s</b>.\n\nWe publish service news, updates and important notices there.\n\nAfter subscribing, tap the button below.",
+		"<b>تأیید Kront VPN</b>\n\nبرای دسترسی به ربات و Mini App، در کانال Telegram ما <b>%s</b> عضو شوید.\n\nخبرها، به‌روزرسانی‌ها و اطلاعیه‌های مهم در آنجا منتشر می‌شود.\n\nپس از عضویت، دکمه زیر را بزنید.")
 	content.Verification.ConfirmButton.Text = localized(content.Verification.ConfirmButton.Text, "✅ Я подписался", "✅ I subscribed", "✅ عضو شدم")
 	content.Verification.CheckFailedText = localized(content.Verification.CheckFailedText, "Не удалось проверить подписку. Попробуйте ещё раз", "Could not verify the subscription. Try again", "بررسی عضویت انجام نشد. دوباره تلاش کنید")
 	content.Verification.NotSubscribedText = localized(content.Verification.NotSubscribedText, "Подписка пока не найдена", "Subscription not found yet", "هنوز عضویت شما پیدا نشد")
