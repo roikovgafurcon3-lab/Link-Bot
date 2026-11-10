@@ -1,0 +1,75 @@
+package handler
+
+import (
+	"context"
+	"fmt"
+	"link-bot/internal/config"
+	"log/slog"
+	"net/url"
+	"strings"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+)
+
+func (h Handler) ReferralCallbackHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	customer, _ := h.customerRepository.FindByTelegramId(ctx, update.CallbackQuery.From.ID)
+	langCode := update.CallbackQuery.From.LanguageCode
+	refCode := customer.TelegramID
+
+	brandName := "Link-Bot"
+	if h.runtimeSettings != nil {
+		brandName = h.runtimeSettings.Snapshot().Content.BrandName
+	}
+	inviteURL := fmt.Sprintf("https://t.me/%s?start=ref_%d", update.CallbackQuery.Message.Message.From.Username, refCode)
+	refLink := "https://t.me/share/url?url=" + url.QueryEscape(inviteURL) + "&text=" + url.QueryEscape("Подключайся к "+brandName)
+
+	count, err := h.referralRepository.CountGrantedByReferrer(ctx, customer.TelegramID)
+	if err != nil {
+		slog.Error("error counting referrals", "error", err)
+		return
+	}
+
+	text := buildReferralScreenText(langCode, count)
+
+	keyboard := [][]models.InlineKeyboardButton{
+		{{Text: h.translation.GetText(langCode, "share_referral_button"), URL: refLink}},
+		{h.premiumBackButton(CallbackStart)},
+	}
+
+	msg := update.CallbackQuery.Message.Message
+	if msg == nil {
+		slog.Error("ReferralCallbackHandler: callback message is nil")
+		return
+	}
+
+	// ✅ Обновляем одно меню-сообщение (картинка + caption + кнопки), без удаления сообщений
+	h.editScreen(ctx, b,
+		msg.Chat.ID,
+		msg.ID,
+		h.translation.GetText(langCode, "image_referral_url"),
+		text,
+		keyboard,
+	)
+}
+
+func buildReferralScreenText(langCode string, count int) string {
+	days := config.GetReferralDays()
+	trafficGb := config.ReferralTrafficBonusBytes() / (1024 * 1024 * 1024)
+
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(langCode)), "en") {
+		return fmt.Sprintf(
+			"<b>Referral program</b>\n\nSuccessful referrals: %d\nReward for each paid friend: +%d days and +%d GB\n\nThe bonus is credited only after the invited user purchases any subscription.",
+			count,
+			days,
+			trafficGb,
+		)
+	}
+
+	return fmt.Sprintf(
+		"☺️ <b>Реферальная программа</b>\n\nУспешных приглашений: %d\nБонус за каждого оплаченного друга: +%d дней и +%d ГБ\n\nБонус начисляется только после того, как приглашённый пользователь оплатит любой тариф.",
+		count,
+		days,
+		trafficGb,
+	)
+}

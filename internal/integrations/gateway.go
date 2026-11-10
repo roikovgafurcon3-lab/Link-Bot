@@ -1,0 +1,1357 @@
+package integrations
+
+import (
+	"bytes"
+	"context"
+	"crypto"
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"hash"
+	"io"
+	"math"
+	"net/http"
+	"net/mail"
+	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"link-bot/internal/paymentchannel"
+)
+
+type Gateway struct {
+	settings       *Service
+	httpClient     *http.Client
+	laveshkaQuotes laveshkaQuoteStore
+}
+
+type CreatePaymentRequest struct {
+	Channels              []string
+	Provider              string
+	PurchaseID            int64
+	Amount                float64
+	Currency              string
+	Description           string
+	CustomerID            int64
+	TelegramID            int64
+	TelegramIDIsSynthetic bool
+	Username              string
+	Email                 string
+	Phone                 string
+	ReturnURL             string
+	ClientIP              string
+	RecurringMonths       int
+	RecurringDaysInMonth  int
+	RecurringReference    string
+}
+
+type CreatedPayment struct {
+	ExternalID         string
+	URL                string
+	RecurringReference string
+}
+
+// PaymentAPIError preserves the response for provider-specific error decoding.
+// Only providers that understand the response format expose a safe explanation.
+type PaymentAPIError struct {
+	StatusCode int
+	Body       []byte
+}
+
+func (e *PaymentAPIError) Error() string {
+	return fmt.Sprintf("payment API returned HTTP %d: %s", e.StatusCode, strings.TrimSpace(string(e.Body)))
+}
+
+type WebhookPayment struct {
+	Ignored             bool
+	PurchaseID          int64
+	ExternalID          string
+	Amount              float64
+	Currency            string
+	Paid                bool
+	Cancelled           bool
+	RecurringToken      string
+	RecurringTitle      string
+	SubscriptionID      string
+	ProviderManaged     bool
+	SubscriptionStopped bool
+}
+
+type RecurringCharge struct {
+	ExternalID string
+	Paid       bool
+	Pending    bool
+	Declined   bool
+}
+
+func ProviderManagesRecurring(provider string) bool {
+	return provider == ProviderLava || provider == ProviderWata || provider == ProviderPlatega || provider == ProviderRollyPay || provider == ProviderCisPay
+}
+
+func (g *Gateway) StopRecurringSubscription(ctx context.Context, provider, externalID string) error {
+	if !ProviderManagesRecurring(provider) || strings.TrimSpace(externalID) == "" {
+		return errors.New("invalid managed subscription")
+	}
+	cfg, ok := g.settings.StoredConfig(provider)
+	if !ok {
+		return fmt.Errorf("интеграция %s не настроена", provider)
+	}
+	switch provider {
+	case ProviderLava:
+		return g.stopLavaSubscription(ctx, cfg, externalID)
+	case ProviderWata:
+		raw := []byte(`{"status":"Completed"}`)
+		return g.doJSON(ctx, http.MethodPost, strings.TrimRight(cfg["apiUrl"], "/")+"/subscriptions/"+url.PathEscape(externalID)+"/statuses", raw, map[string]string{"Authorization": "Bearer " + cfg["accessToken"]}, nil)
+	case ProviderPlatega:
+		return g.doJSON(ctx, http.MethodPost, strings.TrimRight(cfg["apiUrl"], "/")+"/v2/subscription/"+url.PathEscape(externalID)+"/cancel", []byte(`{}`), map[string]string{"X-MerchantId": cfg["merchantId"], "X-Secret": cfg["secretKey"]}, nil)
+	case ProviderRollyPay:
+		base := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://rollypay.io"), "/") + "/api/v1/subscriptions/" + url.PathEscape(externalID)
+		headers := map[string]string{"X-API-Key": cfg["apiKey"], "X-Nonce": uuid.NewString()}
+		var stopped struct {
+			OK bool `json:"ok"`
+		}
+		if err := g.doJSON(ctx, http.MethodPost, base+"/stop", []byte(`{}`), headers, &stopped); err != nil {
+			return err
+		}
+		if !stopped.OK {
+			return errors.New("RollyPay did not confirm subscription stop")
+		}
+		headers["X-Nonce"] = uuid.NewString()
+		var state struct {
+			State         string `json:"state"`
+			BillingStatus string `json:"billing_status"`
+		}
+		if err := g.doJSON(ctx, http.MethodGet, base, nil, headers, &state); err != nil {
+			return err
+		}
+		if state.State != "stop" || state.BillingStatus != "stopped" {
+			return errors.New("RollyPay subscription stop is not final")
+		}
+		return nil
+	case ProviderCisPay:
+		base := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://api.cispay.app"), "/") + "/subscriptions/" + url.PathEscape(externalID) + "/cancel"
+		var response struct {
+			Status string `json:"status"`
+		}
+		if err := g.doJSON(ctx, http.MethodPost, base, []byte(`{}`), map[string]string{"X-Shop-ID": cfg["shopId"], "X-API-Key": cfg["apiKey"]}, &response); err != nil {
+			return err
+		}
+		if response.Status != "CANCELLED" {
+			return errors.New("cisPay did not confirm subscription cancellation")
+		}
+		return nil
+	}
+	return errors.New("unsupported managed subscription provider")
+}
+
+func (g *Gateway) ChargeRecurring(ctx context.Context, provider string, customerID, purchaseID int64, token string, amount int, description, phone string) (RecurringCharge, error) {
+	cfg, ok := g.settings.Config(provider)
+	if !ok {
+		return RecurringCharge{}, fmt.Errorf("интеграция %s не настроена или выключена", provider)
+	}
+	if token == "" || amount <= 0 {
+		return RecurringCharge{}, errors.New("unsupported recurring charge")
+	}
+	if provider == ProviderFreeKassa {
+		cfg["paymentSystemId"] = "36"
+		if cfg["apiKey"] == "" || cfg["clientIP"] == "" {
+			return RecurringCharge{}, errors.New("FreeKassa recurring payments require API key and client IP")
+		}
+		created, err := g.createFKOrder(ctx, cfg, CreatePaymentRequest{Provider: provider, PurchaseID: purchaseID, CustomerID: customerID, Amount: float64(amount), Currency: "RUB", Description: description, ClientIP: cfg["clientIP"], RecurringReference: token})
+		if err != nil {
+			return RecurringCharge{}, err
+		}
+		return RecurringCharge{ExternalID: created.ExternalID, Pending: true}, nil
+	}
+	if provider != ProviderCloudPayments {
+		return RecurringCharge{}, errors.New("unsupported recurring charge provider")
+	}
+	payload := map[string]any{
+		"Amount": amount, "Currency": "RUB", "AccountId": strconv.FormatInt(customerID, 10),
+		"InvoiceId": strconv.FormatInt(purchaseID, 10), "Description": description,
+		"TrInitiatorCode": 0, "PaymentScheduled": 1, "Token": token,
+	}
+	if phone != "" {
+		payload["Payer"] = map[string]string{"Phone": phone}
+	}
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		Success bool   `json:"Success"`
+		Message string `json:"Message"`
+		Model   struct {
+			TransactionID json.Number `json:"TransactionId"`
+			Status        string      `json:"Status"`
+		} `json:"Model"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://api.cloudpayments.ru"), "/") + "/payments/tokens/charge"
+	auth := base64.StdEncoding.EncodeToString([]byte(cfg["publicId"] + ":" + cfg["apiSecret"]))
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"Authorization": "Basic " + auth}, &response); err != nil {
+		return RecurringCharge{}, err
+	}
+	if !response.Success {
+		return RecurringCharge{ExternalID: response.Model.TransactionID.String(), Declined: true}, nil
+	}
+	status := strings.ToLower(response.Model.Status)
+	return RecurringCharge{ExternalID: response.Model.TransactionID.String(), Paid: status == "completed", Declined: status == "declined" || status == "failed", Pending: status != "completed" && status != "declined" && status != "failed"}, nil
+}
+
+func NewGateway(settings *Service) *Gateway {
+	g := &Gateway{settings: settings, httpClient: &http.Client{Timeout: 12 * time.Second}}
+	if settings != nil && settings.repository != nil {
+		g.laveshkaQuotes = settings.repository
+	}
+	return g
+}
+
+func (g *Gateway) Create(ctx context.Context, input CreatePaymentRequest) (CreatedPayment, error) {
+	cfg, ok := g.settings.Config(input.Provider)
+	if !ok {
+		return CreatedPayment{}, fmt.Errorf("интеграция %s не настроена или выключена", input.Provider)
+	}
+	if input.Currency == "" {
+		input.Currency = "RUB"
+	}
+	for _, channel := range input.Channels {
+		if !paymentchannel.Valid(input.Provider, channel) {
+			return CreatedPayment{}, fmt.Errorf("unsupported checkout channel")
+		}
+	}
+	if len(input.Channels) > 1 && !paymentchannel.For(input.Provider).Multiple {
+		return CreatedPayment{}, fmt.Errorf("select one checkout channel")
+	}
+	cfg = channelConfig(cfg, input)
+	switch input.Provider {
+	case ProviderLaveshka:
+		return g.createLaveshka(ctx, cfg, input)
+	case ProviderSmerch:
+		return g.createSmerch(ctx, cfg, input)
+	case ProviderPayHot:
+		return g.createPayHot(ctx, cfg, input)
+	case ProviderDatagio:
+		return g.createDatagio(ctx, cfg, input)
+	case ProviderKassaAI:
+		return g.createKassaAI(ctx, cfg, input)
+	case ProviderLava:
+		if input.RecurringMonths > 0 {
+			return g.createLavaSubscription(ctx, cfg, input)
+		}
+		return g.createLava(ctx, cfg, input)
+	case ProviderWata:
+		return g.createWata(ctx, cfg, input)
+	case ProviderPlatega:
+		return g.createPlatega(ctx, cfg, input)
+	case ProviderFreeKassa:
+		if input.RecurringMonths > 0 {
+			if input.RecurringMonths != 1 && input.RecurringMonths != 12 {
+				return CreatedPayment{}, errors.New("FreeKassa supports monthly or yearly recurring plans")
+			}
+			if cfg["apiKey"] == "" {
+				return CreatedPayment{}, errors.New("FreeKassa recurring payments require an API key")
+			}
+			if len(input.Channels) == 0 {
+				cfg["paymentSystemId"] = "36"
+			} else {
+				cfg["paymentSystemId"] = input.Channels[0]
+			}
+			return g.createFKOrder(ctx, cfg, input)
+		}
+		if len(input.Channels) > 0 {
+			if cfg["apiKey"] == "" {
+				return CreatedPayment{}, errors.New("FreeKassa: для ограничения методов добавьте API-ключ в интеграции")
+			}
+			cfg["paymentSystemId"] = input.Channels[0]
+			return g.createFKOrder(ctx, cfg, input)
+		}
+		return g.createFreeKassa(cfg, input)
+	case ProviderHeleket:
+		return g.createHeleket(ctx, cfg, input)
+	case ProviderPally:
+		return g.createPally(ctx, cfg, input)
+	case ProviderRollyPay:
+		return g.createRollyPay(ctx, cfg, input)
+	case ProviderCisPay:
+		return g.createCisPay(ctx, cfg, input)
+	case ProviderAnore:
+		return g.createAnore(ctx, cfg, input)
+	case ProviderMulenPay:
+		return g.createMulenPay(ctx, cfg, input)
+	case ProviderAuraPay:
+		return g.createAuraPay(ctx, cfg, input)
+	case ProviderAntiloPay:
+		return g.createAntiloPay(ctx, cfg, input)
+	case ProviderTribute:
+		return g.createTribute(ctx, cfg, input)
+	case ProviderParityPay:
+		return g.createParityPay(ctx, cfg, input)
+	case ProviderCloudPayments:
+		return g.createCloudPayments(ctx, cfg, input)
+	default:
+		return CreatedPayment{}, fmt.Errorf("unsupported gateway: %s", input.Provider)
+	}
+}
+
+func (g *Gateway) HandleWebhook(ctx context.Context, provider string, headers http.Header, raw []byte, form url.Values) (WebhookPayment, error) {
+	cfg, ok := g.settings.Config(provider)
+	if !ok {
+		return WebhookPayment{}, errors.New("integration is disabled")
+	}
+	switch provider {
+	case ProviderLaveshka:
+		return g.parseLaveshkaWebhook(ctx, cfg, headers, raw)
+	case ProviderSmerch:
+		return g.parseSmerchWebhook(ctx, cfg, headers, raw)
+	case ProviderPayHot:
+		return parsePayHotWebhook(cfg, headers, raw)
+	case ProviderDatagio:
+		return parseDatagioWebhook(cfg, headers, raw)
+	case ProviderKassaAI:
+		return parseKassaAIWebhook(cfg, form)
+	case ProviderLava:
+		return parseLavaWebhook(cfg, headers, raw)
+	case ProviderWata:
+		return g.parseWataWebhook(ctx, cfg, headers, raw)
+	case ProviderPlatega:
+		return parsePlategaWebhook(cfg, headers, raw)
+	case ProviderFreeKassa:
+		return parseFreeKassaWebhook(cfg, form)
+	case ProviderHeleket:
+		return parseHeleketWebhook(cfg, raw)
+	case ProviderPally:
+		return parsePallyWebhook(cfg, form)
+	case ProviderRollyPay:
+		event, err := parseRollyPayWebhook(cfg, headers, raw)
+		if err != nil || !event.Paid {
+			return event, err
+		}
+		var payment struct {
+			PaymentID      string `json:"payment_id"`
+			SubscriptionID string `json:"subscription_id"`
+			TerminalID     string `json:"terminal_id"`
+			PaymentMethod  string `json:"payment_method"`
+			Status         string `json:"status"`
+			Amount         string `json:"amount"`
+			Currency       string `json:"payment_currency"`
+		}
+		endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://rollypay.io"), "/") + "/api/v1/payments/" + url.PathEscape(event.ExternalID)
+		if err := g.doJSON(ctx, http.MethodGet, endpoint, nil, map[string]string{"X-API-Key": cfg["apiKey"], "X-Nonce": uuid.NewString()}, &payment); err != nil {
+			return WebhookPayment{}, err
+		}
+		amount, amountErr := strconv.ParseFloat(payment.Amount, 64)
+		if payment.PaymentID != event.ExternalID || payment.Status != "paid" {
+			return WebhookPayment{}, errors.New("RollyPay payment verification failed")
+		}
+		if payment.SubscriptionID == "" {
+			if event.PurchaseID <= 0 {
+				return WebhookPayment{}, errors.New("RollyPay payment has no order identity")
+			}
+			return event, nil
+		}
+		if payment.PaymentMethod != "sbp_recurrent" || payment.TerminalID != cfg["terminalId"] || amountErr != nil || amount <= 0 || !strings.EqualFold(payment.Currency, "RUB") {
+			return WebhookPayment{}, errors.New("RollyPay recurring payment verification failed")
+		}
+		event.SubscriptionID, event.Amount, event.Currency, event.ProviderManaged = payment.SubscriptionID, amount, "RUB", true
+		return event, nil
+	case ProviderCisPay:
+		return parseCisPayWebhook(cfg, headers, raw)
+	case ProviderAnore:
+		return parseAnoreWebhook(cfg, headers, raw)
+	case ProviderMulenPay:
+		return g.parseMulenPayWebhook(ctx, cfg, raw)
+	case ProviderAuraPay:
+		return parseShopInvoiceWebhook(cfg, headers, raw)
+	case ProviderAntiloPay:
+		return parseAntiloPayWebhook(cfg, headers, raw)
+	case ProviderTribute:
+		return parseTributeWebhook(cfg, headers, raw)
+	case ProviderParityPay:
+		return parseShopInvoiceWebhook(cfg, headers, raw)
+	case ProviderCloudPayments:
+		return parseCloudPaymentsWebhook(cfg, headers, raw, form)
+	default:
+		return WebhookPayment{}, fmt.Errorf("unknown webhook provider: %s", provider)
+	}
+}
+
+func (g *Gateway) createLava(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	payload := struct {
+		Sum            float64  `json:"sum"`
+		OrderID        string   `json:"orderId"`
+		ShopID         string   `json:"shopId"`
+		HookURL        string   `json:"hookUrl"`
+		SuccessURL     string   `json:"successUrl"`
+		FailURL        string   `json:"failUrl"`
+		Expire         int      `json:"expire"`
+		Comment        string   `json:"comment"`
+		IncludeService []string `json:"includeService,omitempty"`
+	}{input.Amount, strconv.FormatInt(input.PurchaseID, 10), cfg["shopId"], g.settings.WebhookURL(ProviderLava), input.ReturnURL, input.ReturnURL, 60, input.Description, input.Channels}
+	raw, _ := json.Marshal(payload)
+	signature := hmacHex(sha256.New, []byte(cfg["secretKey"]), raw)
+	var response struct {
+		Data struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"data"`
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := g.doJSON(ctx, http.MethodPost, "https://api.lava.ru/business/invoice/create", raw, map[string]string{"Signature": signature}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if response.Data.ID == "" || response.Data.URL == "" {
+		return CreatedPayment{}, fmt.Errorf("LAVA did not return invoice URL: %s", response.Error)
+	}
+	return CreatedPayment{ExternalID: response.Data.ID, URL: response.Data.URL}, nil
+}
+
+func (g *Gateway) createWata(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	payload := map[string]any{
+		"amount": input.Amount, "currency": input.Currency, "description": input.Description,
+		"orderId": strconv.FormatInt(input.PurchaseID, 10), "successRedirectUrl": input.ReturnURL, "failRedirectUrl": input.ReturnURL,
+	}
+	if input.RecurringMonths > 0 {
+		if input.Email == "" || input.Phone == "" {
+			return CreatedPayment{}, errors.New("WATA recurring payments require payer email and phone")
+		}
+		payload["email"] = input.Email
+		payload["phone"] = strings.TrimPrefix(input.Phone, "+")
+		payload["subscription"] = map[string]any{"period": input.RecurringMonths, "interval": "Month", "maxPeriods": 120}
+	}
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	}
+	endpoint := strings.TrimRight(cfg["apiUrl"], "/") + "/links"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"Authorization": "Bearer " + cfg["accessToken"]}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if response.ID == "" || response.URL == "" {
+		return CreatedPayment{}, errors.New("WATA did not return payment link")
+	}
+	return CreatedPayment{ExternalID: response.ID, URL: response.URL}, nil
+}
+
+func (g *Gateway) createPlatega(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	buyerEmail, err := plategaBuyerEmail(input)
+	if err != nil {
+		return CreatedPayment{}, err
+	}
+	metadata := map[string]string{
+		"userId":     strconv.FormatInt(input.CustomerID, 10),
+		"userName":   input.Username,
+		"user_email": buyerEmail,
+	}
+	if input.RecurringMonths > 0 {
+		if input.RecurringMonths > 12 {
+			return CreatedPayment{}, errors.New("invalid Platega recurring customer or period")
+		}
+		payload := map[string]any{
+			"paymentMethod":  6,
+			"paymentDetails": map[string]any{"amount": input.Amount, "currency": input.Currency, "interval": 3, "intervalCount": input.RecurringMonths},
+			"description":    input.Description,
+			"metadata":       metadata,
+		}
+		raw, _ := json.Marshal(payload)
+		endpoint := strings.TrimRight(cfg["apiUrl"], "/") + "/v2/transaction/process"
+		var created struct {
+			TransactionID string `json:"transactionId"`
+		}
+		if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"X-MerchantId": cfg["merchantId"], "X-Secret": cfg["secretKey"]}, &created); err != nil {
+			return CreatedPayment{}, err
+		}
+		if created.TransactionID == "" {
+			return CreatedPayment{}, errors.New("Platega did not return subscription ID")
+		}
+		startRaw, _ := json.Marshal(map[string]string{"email": buyerEmail})
+		var started struct {
+			ConfirmationURL string `json:"confirmationUrl"`
+		}
+		if err := g.doJSON(ctx, http.MethodPost, strings.TrimRight(cfg["apiUrl"], "/")+"/v2/subscription/"+url.PathEscape(created.TransactionID)+"/start", startRaw, map[string]string{"X-MerchantId": cfg["merchantId"], "X-Secret": cfg["secretKey"]}, &started); err != nil {
+			return CreatedPayment{}, err
+		}
+		if !validCheckoutURL(started.ConfirmationURL) {
+			return CreatedPayment{}, errors.New("Platega did not return subscription confirmation URL")
+		}
+		return CreatedPayment{ExternalID: created.TransactionID, URL: started.ConfirmationURL, RecurringReference: created.TransactionID}, nil
+	}
+	payload := map[string]any{
+		"paymentDetails": map[string]any{"amount": input.Amount, "currency": input.Currency},
+		"description":    input.Description, "return": input.ReturnURL, "failedUrl": input.ReturnURL,
+		"payload":  strconv.FormatInt(input.PurchaseID, 10),
+		"metadata": metadata,
+	}
+	applyCheckoutChannels(payload, input)
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		TransactionID string `json:"transactionId"`
+		URL           string `json:"url"`
+	}
+	endpoint := strings.TrimRight(cfg["apiUrl"], "/") + "/v2/transaction/process"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"X-MerchantId": cfg["merchantId"], "X-Secret": cfg["secretKey"]}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if response.TransactionID == "" || response.URL == "" {
+		return CreatedPayment{}, errors.New("Platega did not return payment link")
+	}
+	return CreatedPayment{ExternalID: response.TransactionID, URL: response.URL}, nil
+}
+
+func plategaBuyerEmail(input CreatePaymentRequest) (string, error) {
+	if input.TelegramID > 0 && !input.TelegramIDIsSynthetic {
+		return strconv.FormatInt(input.TelegramID, 10) + "@telegram.org", nil
+	}
+	email := strings.TrimSpace(input.Email)
+	address, err := mail.ParseAddress(email)
+	at := strings.LastIndexByte(email, '@')
+	if err != nil || address.Address != email || at < 1 || !strings.Contains(email[at+1:], ".") {
+		return "", errors.New("Platega requires a valid buyer email or Telegram ID")
+	}
+	return email, nil
+}
+
+func (g *Gateway) createFreeKassa(cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	amount := formatAmount(input.Amount)
+	orderID := strconv.FormatInt(input.PurchaseID, 10)
+	signRaw := strings.Join([]string{cfg["shopId"], amount, cfg["secretWord"], input.Currency, orderID}, ":")
+	sign := fmt.Sprintf("%x", md5.Sum([]byte(signRaw)))
+	query := url.Values{
+		"m": {cfg["shopId"]}, "oa": {amount}, "currency": {input.Currency}, "o": {orderID}, "s": {sign}, "lang": {"ru"},
+	}
+	return CreatedPayment{ExternalID: orderID, URL: "https://pay.fk.money/?" + query.Encode()}, nil
+}
+
+func (g *Gateway) createHeleket(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	payload := map[string]any{
+		"amount": formatAmount(input.Amount), "currency": input.Currency, "order_id": strconv.FormatInt(input.PurchaseID, 10),
+		"url_return": input.ReturnURL, "url_success": input.ReturnURL, "url_callback": g.settings.WebhookURL(ProviderHeleket),
+		"lifetime": 3600, "theme": "dark", "additional_data": fmt.Sprintf("%d | %s", input.CustomerID, input.Description),
+	}
+	applyCheckoutChannels(payload, input)
+	raw, _ := json.Marshal(payload)
+	signSource := base64.StdEncoding.EncodeToString(raw) + cfg["apiKey"]
+	sign := fmt.Sprintf("%x", md5.Sum([]byte(signSource)))
+	var response struct {
+		State   int    `json:"state"`
+		Message string `json:"message"`
+		Result  struct {
+			UUID string `json:"uuid"`
+			URL  string `json:"url"`
+		} `json:"result"`
+	}
+	endpoint := strings.TrimRight(cfg["apiUrl"], "/") + "/v1/payment"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"merchant": cfg["merchantId"], "sign": sign}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if response.State != 0 || response.Result.UUID == "" || response.Result.URL == "" {
+		return CreatedPayment{}, fmt.Errorf("Heleket: %s", response.Message)
+	}
+	return CreatedPayment{ExternalID: response.Result.UUID, URL: response.Result.URL}, nil
+}
+
+func (g *Gateway) createPally(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	orderID := strconv.FormatInt(input.PurchaseID, 10)
+	form := url.Values{
+		"amount":      {formatAmount(input.Amount)},
+		"order_id":    {orderID},
+		"description": {input.Description},
+		"type":        {"normal"},
+		"shop_id":     {cfg["shopId"]},
+		"currency_in": {input.Currency},
+		"custom":      {orderID},
+		"name":        {input.Description},
+	}
+	if len(input.Channels) > 0 {
+		form.Set("payment_method", input.Channels[0])
+	}
+	endpoint := strings.TrimRight(cfg["apiUrl"], "/") + "/api/v1/bill/create"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return CreatedPayment{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg["apiToken"])
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return CreatedPayment{}, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return CreatedPayment{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return CreatedPayment{}, fmt.Errorf("Pally API returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var response struct {
+		Success     json.RawMessage `json:"success"`
+		LinkPageURL string          `json:"link_page_url"`
+		BillID      json.RawMessage `json:"bill_id"`
+		Message     string          `json:"message"`
+		Error       string          `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return CreatedPayment{}, fmt.Errorf("decode Pally response: %w", err)
+	}
+	billID, _ := jsonScalarString(response.BillID)
+	if !jsonTruthy(response.Success) || strings.TrimSpace(response.LinkPageURL) == "" || strings.TrimSpace(billID) == "" {
+		message := firstNonEmpty(response.Message, response.Error, "Pally did not return payment link")
+		return CreatedPayment{}, errors.New(message)
+	}
+	return CreatedPayment{ExternalID: billID, URL: response.LinkPageURL}, nil
+}
+
+func (g *Gateway) createRollyPay(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	if input.RecurringMonths > 0 {
+		terminalID := strings.TrimSpace(cfg["terminalId"])
+		if _, err := uuid.Parse(terminalID); err != nil || input.TelegramID <= 0 {
+			return CreatedPayment{}, errors.New("RollyPay recurring payments require a terminal ID")
+		}
+		interval := map[int]string{1: "month", 3: "quarter", 6: "half_year", 12: "year"}[input.RecurringMonths]
+		if interval == "" {
+			return CreatedPayment{}, errors.New("RollyPay has no matching recurring interval")
+		}
+		base := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://rollypay.io"), "/")
+		headers := map[string]string{"X-API-Key": cfg["apiKey"], "X-Nonce": uuid.NewString()}
+		var plans struct {
+			Items []struct {
+				ID                string `json:"id"`
+				Interval          string `json:"interval"`
+				MerchantAmountRub string `json:"merchant_amount_rub"`
+				PayerAmountRub    string `json:"payer_amount_rub"`
+				CapAmountRub      string `json:"cap_amount_rub"`
+			} `json:"items"`
+		}
+		if err := g.doJSON(ctx, http.MethodGet, base+"/api/v1/subscription-plans?terminal_id="+url.QueryEscape(terminalID), nil, headers, &plans); err != nil {
+			return CreatedPayment{}, err
+		}
+		planID := ""
+		for _, plan := range plans.Items {
+			merchantAmount, _ := strconv.ParseFloat(plan.MerchantAmountRub, 64)
+			payerAmount, _ := strconv.ParseFloat(plan.PayerAmountRub, 64)
+			if plan.CapAmountRub == "" && plan.Interval == interval && math.Abs(merchantAmount-input.Amount) < 0.01 && math.Abs(payerAmount-input.Amount) < 0.01 {
+				planID = plan.ID
+				break
+			}
+		}
+		if planID == "" {
+			return CreatedPayment{}, errors.New("RollyPay has no recurring plan matching this price and period")
+		}
+		payload := map[string]any{"terminal_id": terminalID, "plan_id": planID, "payer_id": "tg_" + strconv.FormatInt(input.TelegramID, 10), "merchant_subscription_ref": strconv.FormatInt(input.PurchaseID, 10)}
+		raw, _ := json.Marshal(payload)
+		var response struct {
+			ID          string `json:"id"`
+			PayURL      string `json:"pay_url"`
+			RedirectURL string `json:"redirect_url"`
+		}
+		headers["X-Nonce"] = uuid.NewString()
+		headers["Idempotency-Key"] = "linkbot-recurring-" + strconv.FormatInt(input.PurchaseID, 10)
+		if err := g.doJSON(ctx, http.MethodPost, base+"/api/v1/subscriptions", raw, headers, &response); err != nil {
+			return CreatedPayment{}, err
+		}
+		checkoutURL := firstNonEmpty(response.PayURL, response.RedirectURL)
+		if response.ID == "" || !validCheckoutURL(checkoutURL) {
+			return CreatedPayment{}, errors.New("RollyPay did not return a recurring checkout URL")
+		}
+		return CreatedPayment{ExternalID: response.ID, URL: checkoutURL, RecurringReference: response.ID}, nil
+	}
+	payload := map[string]any{
+		"amount":               formatAmount(input.Amount),
+		"payment_currency":     input.Currency,
+		"order_id":             strconv.FormatInt(input.PurchaseID, 10),
+		"description":          input.Description,
+		"success_redirect_url": input.ReturnURL,
+		"fail_redirect_url":    input.ReturnURL,
+	}
+	applyCheckoutChannels(payload, input)
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		PaymentID string `json:"payment_id"`
+		PayURL    string `json:"pay_url"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://rollypay.io"), "/") + "/api/v1/payments"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{
+		"X-API-Key": cfg["apiKey"],
+		"X-Nonce":   uuid.NewString(),
+	}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if strings.TrimSpace(response.PaymentID) == "" || strings.TrimSpace(response.PayURL) == "" {
+		return CreatedPayment{}, errors.New("RollyPay did not return payment link")
+	}
+	return CreatedPayment{ExternalID: response.PaymentID, URL: response.PayURL}, nil
+}
+
+func (g *Gateway) createCisPay(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	amountKopecks := int64(math.Round(input.Amount * 100))
+	if amountKopecks <= 0 {
+		return CreatedPayment{}, errors.New("cisPay payment amount must be positive")
+	}
+	if input.RecurringMonths > 0 {
+		if !strings.EqualFold(cfg["paymentMethod"], "SBP") {
+			return CreatedPayment{}, errors.New("cisPay recurring payments require SBP payment method")
+		}
+		intervalDays := input.RecurringMonths * input.RecurringDaysInMonth
+		if intervalDays < 7 || intervalDays > 360 {
+			return CreatedPayment{}, errors.New("cisPay recurring period must be 7 to 360 days")
+		}
+		payload := map[string]any{"amount": amountKopecks, "currency": "RUB", "interval_days": intervalDays, "payment_method": "SBP", "customer_id": strconv.FormatInt(input.CustomerID, 10), "subscription_purpose": input.Description, "redirect_success_url": input.ReturnURL, "redirect_fail_url": input.ReturnURL}
+		raw, _ := json.Marshal(payload)
+		var response struct {
+			ID         string `json:"id"`
+			PaymentURL string `json:"payment_url"`
+		}
+		endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://api.cispay.app"), "/") + "/subscriptions"
+		if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"X-Shop-ID": cfg["shopId"], "X-API-Key": cfg["apiKey"]}, &response); err != nil {
+			return CreatedPayment{}, err
+		}
+		if response.ID == "" || !validCheckoutURL(response.PaymentURL) {
+			return CreatedPayment{}, errors.New("cisPay did not return subscription payment URL")
+		}
+		return CreatedPayment{ExternalID: response.ID, URL: response.PaymentURL, RecurringReference: response.ID}, nil
+	}
+	method := strings.ToUpper(strings.TrimSpace(cfg["paymentMethod"]))
+	if method != "CARD" && method != "SBP" {
+		return CreatedPayment{}, errors.New("cisPay payment method must be CARD or SBP")
+	}
+	payload := map[string]any{
+		"amount":               amountKopecks,
+		"currency":             input.Currency,
+		"order_id":             strconv.FormatInt(input.PurchaseID, 10),
+		"payment_method":       method,
+		"customer_id":          strconv.FormatInt(input.CustomerID, 10),
+		"description":          input.Description,
+		"redirect_success_url": input.ReturnURL,
+		"redirect_fail_url":    input.ReturnURL,
+		"payload":              strconv.FormatInt(input.PurchaseID, 10),
+	}
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		ID         string `json:"id"`
+		PaymentURL string `json:"payment_url"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://api.cispay.app"), "/") + "/payments"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{
+		"X-Shop-ID": cfg["shopId"],
+		"X-API-Key": cfg["apiKey"],
+	}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if strings.TrimSpace(response.ID) == "" || strings.TrimSpace(response.PaymentURL) == "" {
+		return CreatedPayment{}, errors.New("cisPay did not return payment link")
+	}
+	return CreatedPayment{ExternalID: response.ID, URL: response.PaymentURL}, nil
+}
+
+func (g *Gateway) createAnore(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	shopID, err := strconv.ParseInt(strings.TrimSpace(cfg["shopId"]), 10, 64)
+	if err != nil || shopID <= 0 {
+		return CreatedPayment{}, errors.New("anore.cc shop ID must be a positive number")
+	}
+	payload := map[string]any{
+		"amount": input.Amount, "currency": input.Currency, "description": input.Description,
+		"shopId": shopID, "orderId": strconv.FormatInt(input.PurchaseID, 10),
+		"callbackUrl": g.settings.WebhookURL(ProviderAnore),
+		"successurl":  input.ReturnURL, "failurl": input.ReturnURL,
+	}
+	applyCheckoutChannels(payload, input)
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		Success    bool   `json:"success"`
+		ID         string `json:"id"`
+		PaymentURL string `json:"paymentUrl"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://api.anore.cc/v1"), "/") + "/payments"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"Authorization": "Bearer " + cfg["apiKey"]}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if !response.Success || response.ID == "" || response.PaymentURL == "" {
+		return CreatedPayment{}, errors.New("anore.cc did not return a payment link")
+	}
+	return CreatedPayment{ExternalID: response.ID, URL: response.PaymentURL}, nil
+}
+
+func (g *Gateway) createCloudPayments(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	payload := map[string]any{
+		"Amount": input.Amount, "Currency": input.Currency, "Description": input.Description,
+		"InvoiceId": strconv.FormatInt(input.PurchaseID, 10), "AccountId": strconv.FormatInt(input.CustomerID, 10),
+		"RequireConfirmation": false, "SendEmail": false,
+		"SuccessRedirectUrl": input.ReturnURL, "FailRedirectUrl": input.ReturnURL,
+	}
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		Success bool   `json:"Success"`
+		Message string `json:"Message"`
+		Model   struct {
+			ID  string `json:"Id"`
+			URL string `json:"Url"`
+		} `json:"Model"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://api.cloudpayments.ru"), "/") + "/orders/create"
+	auth := base64.StdEncoding.EncodeToString([]byte(cfg["publicId"] + ":" + cfg["apiSecret"]))
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"Authorization": "Basic " + auth}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if !response.Success || response.Model.ID == "" || response.Model.URL == "" {
+		return CreatedPayment{}, fmt.Errorf("CloudPayments did not return a payment link: %s", response.Message)
+	}
+	return CreatedPayment{ExternalID: response.Model.ID, URL: response.Model.URL}, nil
+}
+
+func (g *Gateway) createMulenPay(ctx context.Context, cfg map[string]string, input CreatePaymentRequest) (CreatedPayment, error) {
+	shopID, err := strconv.Atoi(strings.TrimSpace(cfg["shopId"]))
+	if err != nil || shopID <= 0 {
+		return CreatedPayment{}, errors.New("MulenPay shop ID must be a positive number")
+	}
+	amount := formatAmount(input.Amount)
+	currency := strings.ToLower(input.Currency)
+	sign := sha1.Sum([]byte(currency + amount + strconv.Itoa(shopID) + cfg["secretKey"]))
+	payload := map[string]any{
+		"currency": currency, "amount": amount, "uuid": strconv.FormatInt(input.PurchaseID, 10),
+		"shopId": shopID, "description": input.Description, "website_url": input.ReturnURL,
+		"items": []map[string]any{{"description": input.Description, "quantity": 1, "price": input.Amount, "vat_code": 0, "payment_subject": 4, "payment_mode": 4}},
+		"sign":  hex.EncodeToString(sign[:]),
+	}
+	raw, _ := json.Marshal(payload)
+	var response struct {
+		Success bool   `json:"success"`
+		ID      int64  `json:"id"`
+		URL     string `json:"paymentUrl"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://mulenpay.ru/api"), "/") + "/v2/payments"
+	if err := g.doJSON(ctx, http.MethodPost, endpoint, raw, map[string]string{"Authorization": "Bearer " + cfg["apiKey"]}, &response); err != nil {
+		return CreatedPayment{}, err
+	}
+	if !response.Success || response.ID <= 0 || response.URL == "" {
+		return CreatedPayment{}, errors.New("MulenPay did not return a payment link")
+	}
+	return CreatedPayment{ExternalID: strconv.FormatInt(response.ID, 10), URL: response.URL}, nil
+}
+
+func (g *Gateway) parseMulenPayWebhook(ctx context.Context, cfg map[string]string, raw []byte) (WebhookPayment, error) {
+	var callback struct {
+		ID     int64  `json:"id"`
+		UUID   string `json:"uuid"`
+		Status string `json:"payment_status"`
+	}
+	if err := json.Unmarshal(raw, &callback); err != nil {
+		return WebhookPayment{}, err
+	}
+	purchaseID, err := strconv.ParseInt(callback.UUID, 10, 64)
+	if err != nil || purchaseID <= 0 || callback.ID <= 0 {
+		return WebhookPayment{}, errors.New("invalid MulenPay callback")
+	}
+	// The documented callback has no signature. Read the payment from MulenPay before changing an order.
+	var response struct {
+		Success bool `json:"success"`
+		Payment struct {
+			ID       int64  `json:"id"`
+			UUID     string `json:"uuid"`
+			Amount   string `json:"amount"`
+			Currency string `json:"currency"`
+			Status   int    `json:"status"`
+		} `json:"payment"`
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(cfg["apiUrl"], "https://mulenpay.ru/api"), "/") + "/v2/payments/" + strconv.FormatInt(callback.ID, 10)
+	if err := g.doJSON(ctx, http.MethodGet, endpoint, nil, map[string]string{"Authorization": "Bearer " + cfg["apiKey"]}, &response); err != nil {
+		return WebhookPayment{}, err
+	}
+	if !response.Success || response.Payment.ID != callback.ID || response.Payment.UUID != callback.UUID {
+		return WebhookPayment{}, errors.New("MulenPay callback does not match payment")
+	}
+	amount, err := strconv.ParseFloat(response.Payment.Amount, 64)
+	if err != nil || amount <= 0 {
+		return WebhookPayment{}, errors.New("invalid MulenPay payment amount")
+	}
+	return WebhookPayment{PurchaseID: purchaseID, ExternalID: strconv.FormatInt(callback.ID, 10), Amount: amount,
+		Currency: strings.ToUpper(response.Payment.Currency), Paid: response.Payment.Status == 3, Cancelled: response.Payment.Status == 2 || response.Payment.Status == 4}, nil
+}
+
+func (g *Gateway) doJSON(ctx context.Context, method, endpoint string, body []byte, headers map[string]string, target any) error {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &PaymentAPIError{StatusCode: resp.StatusCode, Body: raw}
+	}
+	if target != nil && len(raw) > 0 {
+		if err := json.Unmarshal(raw, target); err != nil {
+			return fmt.Errorf("decode payment API response: %w", err)
+		}
+	}
+	return nil
+}
+
+func parseLavaWebhook(cfg map[string]string, headers http.Header, raw []byte) (WebhookPayment, error) {
+	var payload struct {
+		Type      int             `json:"type"`
+		InvoiceID string          `json:"invoice_id"`
+		OrderID   json.RawMessage `json:"order_id"`
+		Status    string          `json:"status"`
+		Amount    json.RawMessage `json:"amount"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	signature := strings.TrimSpace(headers.Get("Authorization"))
+	signature = strings.TrimSpace(strings.TrimPrefix(signature, "Bearer "))
+	canonical, err := sortedJSONObject(raw)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	expected := hmacHex(sha256.New, []byte(cfg["additionalKey"]), canonical)
+	if signature == "" || !hmac.Equal([]byte(strings.ToLower(expected)), []byte(strings.ToLower(signature))) {
+		return WebhookPayment{}, errors.New("invalid LAVA webhook signature")
+	}
+	if payload.Type == 4 {
+		// The subscription webhook only announces a status change. The signed
+		// status API is polled for the last successful charge before fulfillment.
+		return WebhookPayment{Ignored: true}, nil
+	}
+	orderID, err := jsonScalarString(payload.OrderID)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	purchaseID, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	amountText, err := jsonScalarString(payload.Amount)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	amount, err := strconv.ParseFloat(amountText, 64)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	status := strings.ToLower(payload.Status)
+	return WebhookPayment{PurchaseID: purchaseID, ExternalID: payload.InvoiceID, Amount: amount, Currency: "RUB", Paid: status == "success" || status == "paid", Cancelled: status == "cancel" || status == "failed" || status == "expired"}, nil
+}
+
+func sortedJSONObject(raw []byte) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var result bytes.Buffer
+	result.WriteByte('{')
+	for index, key := range keys {
+		if index > 0 {
+			result.WriteByte(',')
+		}
+		encodedKey, _ := json.Marshal(key)
+		result.Write(encodedKey)
+		result.WriteByte(':')
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, fields[key]); err != nil {
+			return nil, err
+		}
+		result.Write(compact.Bytes())
+	}
+	result.WriteByte('}')
+	return result.Bytes(), nil
+}
+
+func jsonScalarString(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", errors.New("missing JSON value")
+	}
+	var text string
+	if raw[0] == '"' {
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return "", err
+		}
+		return text, nil
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (g *Gateway) parseWataWebhook(ctx context.Context, cfg map[string]string, headers http.Header, raw []byte) (WebhookPayment, error) {
+	signature := strings.TrimSpace(headers.Get("X-Signature"))
+	if signature == "" {
+		return WebhookPayment{}, errors.New("missing WATA signature")
+	}
+	publicKey, err := g.fetchWataPublicKey(ctx, cfg)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(signature)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	digest := sha512.Sum512(raw)
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA512, digest[:], sigBytes); err != nil {
+		return WebhookPayment{}, errors.New("invalid WATA webhook signature")
+	}
+	var payload struct {
+		EventType         string  `json:"eventType"`
+		Kind              string  `json:"kind"`
+		ID                string  `json:"id"`
+		TransactionStatus string  `json:"transactionStatus"`
+		Amount            float64 `json:"amount"`
+		Currency          string  `json:"currency"`
+		OrderID           string  `json:"orderId"`
+		SubscriptionID    string  `json:"subscriptionId"`
+		Type              string  `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	if payload.EventType == "subscription_status_changed" {
+		var change struct {
+			SubscriptionID string `json:"subscriptionId"`
+			Status         string `json:"status"`
+		}
+		if err := json.Unmarshal(raw, &change); err != nil {
+			return WebhookPayment{}, err
+		}
+		return WebhookPayment{SubscriptionID: change.SubscriptionID, SubscriptionStopped: strings.EqualFold(change.Status, "Completed") || strings.EqualFold(change.Status, "Failed"), Ignored: change.SubscriptionID == ""}, nil
+	}
+	if payload.Kind != "Payment" {
+		return WebhookPayment{Ignored: true}, nil
+	}
+	purchaseID, err := strconv.ParseInt(payload.OrderID, 10, 64)
+	if err != nil && strings.TrimSpace(payload.SubscriptionID) == "" {
+		return WebhookPayment{}, err
+	}
+	status := strings.ToLower(payload.TransactionStatus)
+	return WebhookPayment{PurchaseID: purchaseID, ExternalID: payload.ID, Amount: payload.Amount, Currency: payload.Currency, Paid: status == "paid", Cancelled: status == "declined", SubscriptionID: strings.TrimSpace(payload.SubscriptionID), ProviderManaged: strings.EqualFold(payload.Type, "Token")}, nil
+}
+
+func (g *Gateway) fetchWataPublicKey(ctx context.Context, cfg map[string]string) (*rsa.PublicKey, error) {
+	endpoint := strings.TrimRight(cfg["apiUrl"], "/") + "/public-key"
+	var response struct {
+		Value string `json:"value"`
+	}
+	if err := g.doJSON(ctx, http.MethodGet, endpoint, nil, map[string]string{"Authorization": "Bearer " + cfg["accessToken"]}, &response); err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode([]byte(response.Value))
+	if block == nil {
+		return nil, errors.New("invalid WATA public key")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err == nil {
+		if key, ok := parsed.(*rsa.PublicKey); ok {
+			return key, nil
+		}
+	}
+	if key, pkcs1Err := x509.ParsePKCS1PublicKey(block.Bytes); pkcs1Err == nil {
+		return key, nil
+	}
+	return nil, errors.New("WATA public key is not RSA")
+}
+
+func parsePlategaWebhook(cfg map[string]string, headers http.Header, raw []byte) (WebhookPayment, error) {
+	if !hmac.Equal([]byte(headers.Get("X-MerchantId")), []byte(cfg["merchantId"])) || !hmac.Equal([]byte(headers.Get("X-Secret")), []byte(cfg["secretKey"])) {
+		return WebhookPayment{}, errors.New("invalid Platega webhook credentials")
+	}
+	var payload struct {
+		ID             string  `json:"id"`
+		Amount         float64 `json:"amount"`
+		Currency       string  `json:"currency"`
+		Status         string  `json:"status"`
+		SubscriptionID string  `json:"subscriptionId"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	if strings.TrimSpace(payload.ID) == "" {
+		return WebhookPayment{}, errors.New("missing Platega payment ID")
+	}
+	status := strings.ToUpper(strings.TrimSpace(payload.Status))
+	if strings.HasPrefix(status, "SUBSCRIPTION_") {
+		if payload.SubscriptionID != "" && payload.SubscriptionID != payload.ID {
+			return WebhookPayment{}, errors.New("Platega subscription callback identity mismatch")
+		}
+		stopped := status == "SUBSCRIPTION_CANCELLED" || status == "SUBSCRIPTION_FAILED"
+		return WebhookPayment{
+			ExternalID: payload.ID, Amount: payload.Amount, Currency: payload.Currency,
+			SubscriptionID: payload.ID, Ignored: !stopped,
+			SubscriptionStopped: stopped,
+		}, nil
+	}
+	// Resolve by the provider's transaction ID, never by the optional merchant payload.
+	event := WebhookPayment{ExternalID: payload.ID, Amount: payload.Amount, Currency: payload.Currency, SubscriptionID: strings.TrimSpace(payload.SubscriptionID), ProviderManaged: strings.TrimSpace(payload.SubscriptionID) != ""}
+	switch status {
+	case "CONFIRMED":
+		event.Paid = true
+	case "CANCELED", "CHARGEBACKED":
+		event.Cancelled = true
+	default:
+		// DISPUTED only freezes the merchant's funds; it does not undo fulfillment.
+		// Preserve the paid marker so DISPUTED -> CONFIRMED cannot grant it again.
+		// Partial refunds and subscription events also do not create a new purchase.
+		event.Ignored = true
+	}
+	return event, nil
+}
+
+func parseFreeKassaWebhook(cfg map[string]string, form url.Values) (WebhookPayment, error) {
+	merchantID, amount, orderID, signature := form.Get("MERCHANT_ID"), form.Get("AMOUNT"), form.Get("MERCHANT_ORDER_ID"), form.Get("SIGN")
+	expected := fmt.Sprintf("%x", md5.Sum([]byte(strings.Join([]string{merchantID, amount, cfg["secretWord2"], orderID}, ":"))))
+	if merchantID != cfg["shopId"] || !hmac.Equal([]byte(strings.ToLower(expected)), []byte(strings.ToLower(signature))) {
+		return WebhookPayment{}, errors.New("invalid FreeKassa webhook signature")
+	}
+	purchaseID, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	value, _ := strconv.ParseFloat(amount, 64)
+	return WebhookPayment{PurchaseID: purchaseID, ExternalID: form.Get("intid"), Amount: value, Currency: "RUB", Paid: true}, nil
+}
+
+func parseHeleketWebhook(cfg map[string]string, raw []byte) (WebhookPayment, error) {
+	var payload struct {
+		UUID          string `json:"uuid"`
+		OrderID       string `json:"order_id"`
+		Amount        string `json:"amount"`
+		Currency      string `json:"currency"`
+		PaymentStatus string `json:"status"`
+		Sign          string `json:"sign"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	unsigned := regexp.MustCompile(`,\s*"sign"\s*:\s*"[^"]*"\s*}`).ReplaceAll(raw, []byte("}"))
+	if bytes.Equal(unsigned, raw) {
+		return WebhookPayment{}, errors.New("invalid Heleket webhook payload")
+	}
+	signSource := base64.StdEncoding.EncodeToString(unsigned) + cfg["apiKey"]
+	expected := fmt.Sprintf("%x", md5.Sum([]byte(signSource)))
+	if !hmac.Equal([]byte(strings.ToLower(expected)), []byte(strings.ToLower(payload.Sign))) {
+		return WebhookPayment{}, errors.New("invalid Heleket webhook signature")
+	}
+	purchaseID, err := strconv.ParseInt(payload.OrderID, 10, 64)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	amount, _ := strconv.ParseFloat(payload.Amount, 64)
+	status := strings.ToLower(payload.PaymentStatus)
+	return WebhookPayment{PurchaseID: purchaseID, ExternalID: payload.UUID, Amount: amount, Currency: payload.Currency, Paid: status == "paid" || status == "paid_over", Cancelled: status == "cancel" || status == "fail" || status == "wrong_amount" || status == "system_fail" || status == "refund_process" || status == "refund_fail" || status == "refund_paid"}, nil
+}
+
+func parsePallyWebhook(cfg map[string]string, form url.Values) (WebhookPayment, error) {
+	invoiceID := strings.TrimSpace(form.Get("InvId"))
+	amountText := strings.TrimSpace(form.Get("OutSum"))
+	signature := strings.TrimSpace(form.Get("SignatureValue"))
+	if invoiceID == "" || amountText == "" || signature == "" {
+		return WebhookPayment{}, errors.New("invalid Pally webhook payload")
+	}
+	expected := strings.ToUpper(fmt.Sprintf("%x", md5.Sum([]byte(amountText+":"+invoiceID+":"+cfg["apiToken"]))))
+	if !hmac.Equal([]byte(expected), []byte(strings.ToUpper(signature))) {
+		return WebhookPayment{}, errors.New("invalid Pally webhook signature")
+	}
+	purchaseID, err := strconv.ParseInt(invoiceID, 10, 64)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	amount, err := strconv.ParseFloat(strings.ReplaceAll(amountText, ",", "."), 64)
+	if err != nil {
+		return WebhookPayment{}, err
+	}
+	status := strings.ToUpper(strings.TrimSpace(form.Get("Status")))
+	return WebhookPayment{
+		PurchaseID: purchaseID,
+		Amount:     amount,
+		Currency:   strings.ToUpper(strings.TrimSpace(form.Get("CurrencyIn"))),
+		Paid:       status == "SUCCESS" || status == "OVERPAID",
+		Cancelled:  status == "FAIL" || status == "CANCELED" || status == "CANCELLED",
+	}, nil
+}
+
+func parseRollyPayWebhook(cfg map[string]string, headers http.Header, raw []byte) (WebhookPayment, error) {
+	timestamp := strings.TrimSpace(headers.Get("X-Timestamp"))
+	signature := strings.TrimSpace(headers.Get("X-Signature"))
+	if timestamp == "" || signature == "" {
+		return WebhookPayment{}, errors.New("missing RollyPay webhook signature")
+	}
+	if _, err := strconv.ParseInt(timestamp, 10, 64); err != nil {
+		return WebhookPayment{}, errors.New("invalid RollyPay webhook timestamp")
+	}
+	mac := hmac.New(sha256.New, []byte(cfg["signingSecret"]))
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(raw)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(strings.ToLower(expected)), []byte(strings.ToLower(signature))) {
+		return WebhookPayment{}, errors.New("invalid RollyPay webhook signature")
+	}
+	var payload struct {
+		PaymentID string `json:"payment_id"`
+		OrderID   string `json:"order_id"`
+		Status    string `json:"status"`
+		Amount    string `json:"amount"`
+		Currency  string `json:"currency"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	purchaseID, _ := strconv.ParseInt(payload.OrderID, 10, 64)
+	if strings.TrimSpace(payload.PaymentID) == "" {
+		return WebhookPayment{}, errors.New("invalid RollyPay webhook payload")
+	}
+	amount, err := strconv.ParseFloat(payload.Amount, 64)
+	if err != nil || amount <= 0 {
+		return WebhookPayment{}, errors.New("invalid RollyPay webhook amount")
+	}
+	status := strings.ToLower(strings.TrimSpace(payload.Status))
+	if purchaseID <= 0 && status != "paid" {
+		return WebhookPayment{Ignored: true}, nil
+	}
+	return WebhookPayment{
+		PurchaseID: purchaseID, ExternalID: payload.PaymentID, Amount: amount, Currency: strings.ToUpper(strings.TrimSpace(payload.Currency)),
+		Paid: status == "paid", Cancelled: status == "canceled" || status == "expired" || status == "chargeback" || status == "refunded",
+	}, nil
+}
+
+func parseCisPayWebhook(cfg map[string]string, headers http.Header, raw []byte) (WebhookPayment, error) {
+	signature := strings.TrimSpace(headers.Get("X-Signature"))
+	expected := hmacHex(sha256.New, []byte(cfg["apiKey"]), raw)
+	if signature == "" || !hmac.Equal([]byte(strings.ToLower(expected)), []byte(strings.ToLower(signature))) {
+		return WebhookPayment{}, errors.New("invalid cisPay webhook signature")
+	}
+	var payload struct {
+		Event          string `json:"event"`
+		Object         string `json:"object"`
+		ID             string `json:"id"`
+		OrderID        string `json:"order_id"`
+		Status         string `json:"status"`
+		Amount         int64  `json:"amount"`
+		Currency       string `json:"currency"`
+		SubscriptionID string `json:"subscription_id"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	if payload.Object == "subscription" && payload.Event != "" {
+		return WebhookPayment{SubscriptionID: payload.ID, SubscriptionStopped: payload.Event == "subscription.cancelled" || payload.Event == "subscription.failed", Ignored: payload.ID == ""}, nil
+	}
+	purchaseID, err := strconv.ParseInt(payload.OrderID, 10, 64)
+	if (err != nil && payload.SubscriptionID == "") || strings.TrimSpace(payload.ID) == "" || payload.Amount <= 0 {
+		return WebhookPayment{}, errors.New("invalid cisPay webhook payload")
+	}
+	status := strings.ToUpper(strings.TrimSpace(payload.Status))
+	return WebhookPayment{
+		PurchaseID: purchaseID, ExternalID: payload.ID, Amount: float64(payload.Amount) / 100, Currency: strings.ToUpper(strings.TrimSpace(payload.Currency)),
+		Paid: status == "PAID", Cancelled: status == "FAILED" || status == "EXPIRED" || status == "REFUNDED",
+		SubscriptionID: payload.SubscriptionID, ProviderManaged: payload.SubscriptionID != "",
+	}, nil
+}
+
+func parseAnoreWebhook(cfg map[string]string, headers http.Header, raw []byte) (WebhookPayment, error) {
+	signature := strings.TrimSpace(headers.Get("Anore-Signature"))
+	expected := hmacHex(sha256.New, []byte(cfg["webhookSecret"]), raw)
+	if signature == "" || !hmac.Equal([]byte(strings.ToLower(signature)), []byte(expected)) {
+		return WebhookPayment{}, errors.New("invalid anore.cc webhook signature")
+	}
+	var payload struct {
+		Event    string  `json:"event"`
+		ID       string  `json:"id"`
+		OrderID  string  `json:"orderId"`
+		Amount   float64 `json:"amount"`
+		Currency string  `json:"currency"`
+		Status   string  `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebhookPayment{}, err
+	}
+	if payload.Event != "payment.succeeded" && payload.Event != "payment.expired" {
+		return WebhookPayment{}, errors.New("unsupported anore.cc webhook event")
+	}
+	purchaseID, err := strconv.ParseInt(payload.OrderID, 10, 64)
+	if err != nil || purchaseID <= 0 || payload.ID == "" || payload.Amount <= 0 {
+		return WebhookPayment{}, errors.New("invalid anore.cc webhook payment")
+	}
+	return WebhookPayment{
+		PurchaseID: purchaseID, ExternalID: payload.ID, Amount: payload.Amount, Currency: strings.ToUpper(payload.Currency),
+		Paid:      payload.Event == "payment.succeeded" && payload.Status == "paid",
+		Cancelled: payload.Event == "payment.expired" && payload.Status == "expired",
+	}, nil
+}
+
+func parseCloudPaymentsWebhook(cfg map[string]string, headers http.Header, raw []byte, form url.Values) (WebhookPayment, error) {
+	signature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(headers.Get("Content-HMAC")))
+	if err != nil || len(signature) == 0 {
+		return WebhookPayment{}, errors.New("missing CloudPayments webhook signature")
+	}
+	mac := hmac.New(sha256.New, []byte(cfg["apiSecret"]))
+	_, _ = mac.Write(raw)
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return WebhookPayment{}, errors.New("invalid CloudPayments webhook signature")
+	}
+	purchaseID, err := strconv.ParseInt(strings.TrimSpace(form.Get("InvoiceId")), 10, 64)
+	if err != nil || purchaseID <= 0 || strings.TrimSpace(form.Get("TransactionId")) == "" {
+		return WebhookPayment{}, errors.New("invalid CloudPayments webhook payment")
+	}
+	amount, err := strconv.ParseFloat(strings.ReplaceAll(form.Get("Amount"), ",", "."), 64)
+	if err != nil || amount <= 0 {
+		return WebhookPayment{}, errors.New("invalid CloudPayments webhook amount")
+	}
+	return WebhookPayment{
+		PurchaseID: purchaseID, Amount: amount, Currency: strings.ToUpper(form.Get("Currency")),
+		Paid:           strings.EqualFold(form.Get("Status"), "Completed") && strings.EqualFold(form.Get("OperationType"), "Payment"),
+		Cancelled:      (strings.EqualFold(form.Get("Status"), "Declined") || strings.EqualFold(form.Get("Status"), "Failed")) && strings.EqualFold(form.Get("OperationType"), "Payment"),
+		RecurringToken: strings.TrimSpace(form.Get("Token")),
+		RecurringTitle: strings.TrimSpace(form.Get("CardType") + " •••• " + form.Get("CardLastFour")),
+	}, nil
+}
+
+func jsonTruthy(raw json.RawMessage) bool {
+	value, err := jsonScalarString(raw)
+	if err != nil {
+		return false
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "true" || value == "1" || value == "success"
+}
+
+func decodeJSONNumbers(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	return decoder.Decode(target)
+}
+
+func hmacHex(newHash func() hash.Hash, key, raw []byte) string {
+	mac := hmac.New(newHash, key)
+	_, _ = mac.Write(raw)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func formatAmount(amount float64) string {
+	return strconv.FormatFloat(amount, 'f', 2, 64)
+}

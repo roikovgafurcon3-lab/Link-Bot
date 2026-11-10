@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if (($# > 1)) || { (($# == 1)) && [[ $1 != --standalone ]]; }; then
+  printf 'Usage: bash update.sh [--standalone]\n' >&2
+  exit 2
+fi
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "$repo_root"
+
+# Re-execute the freshly pulled script so this remains the only command needed
+# for both a code update and a restart after editing .env.
+if [[ ${LINK_BOT_UPDATE_REEXEC:-} != 1 ]]; then
+  # A host-side lock also coordinates manual and Mini App updates. The open
+  # descriptor survives re-exec and is released when the script finishes.
+  exec 9>"$repo_root/.git/link-bot-update.lock"
+  if ! flock -n 9; then
+    printf 'Обновление Link-Bot уже выполняется.\n' >&2
+    exit 1
+  fi
+  bash ./scripts/update-source.sh
+  exec env LINK_BOT_UPDATE_REEXEC=1 bash "$repo_root/update.sh" "$@"
+fi
+
+bash ./scripts/ensure-env.sh .env
+
+read_env_value() {
+  local key=$1 line value=""
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    if [[ $line =~ ^[[:space:]]*${key}[[:space:]]*=(.*)$ ]]; then
+      value=${BASH_REMATCH[1]}
+    fi
+  done < .env
+  value=${value%%#*}
+  value=${value#"${value%%[![:space:]]*}"}
+  value=${value%"${value##*[![:space:]]}"}
+  if [[ $value == \"*\" || $value == \'*\' ]]; then
+    value=${value:1:${#value}-2}
+  fi
+  printf '%s' "$value"
+}
+
+public_host=$(read_env_value PUBLIC_HOST)
+public_base_url=$(read_env_value PUBLIC_BASE_URL)
+cabinet_subdomain=$(read_env_value CABINET_SUBDOMAIN)
+admin_subdomain=$(read_env_value ADMIN_SUBDOMAIN)
+if [[ -n $admin_subdomain ]]; then
+  if [[ ! $admin_subdomain =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]] ||
+     ((${#admin_subdomain} > 63)) || [[ ${admin_subdomain,,} == ${cabinet_subdomain,,} ]]; then
+    printf 'ADMIN_SUBDOMAIN must be a DNS label different from CABINET_SUBDOMAIN\n' >&2
+    exit 1
+  fi
+  admin_subdomain=${admin_subdomain,,}
+fi
+if [[ ! $public_host =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] ||
+   { [[ -n $cabinet_subdomain ]] && {
+     [[ ! $cabinet_subdomain =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]] ||
+     ((${#cabinet_subdomain} > 63));
+   }; }; then
+  printf 'Invalid CABINET_SUBDOMAIN or PUBLIC_HOST in .env\n' >&2
+  exit 1
+fi
+if [[ $public_base_url != "https://${public_host}" ]]; then
+  printf 'PUBLIC_BASE_URL must be https://%s when PUBLIC_HOST is %s. Update both values in .env.\n' "$public_host" "$public_host" >&2
+  exit 1
+fi
+
+# A Caddy container can have the same name and Caddyfile mount while belonging
+# to a different Compose project. Recreate it with its actual project name.
+caddy_container_exists=false
+caddyfile_mount=""
+caddy_project=""
+caddy_service=""
+if docker inspect link-bot-caddy >/dev/null 2>&1; then
+  caddy_container_exists=true
+  caddyfile_mount=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{if eq .Destination "/etc/caddy"}}{{.Source}}/Caddyfile{{end}}{{end}}' link-bot-caddy)
+  caddy_project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' link-bot-caddy 2>/dev/null || true)
+  caddy_service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' link-bot-caddy 2>/dev/null || true)
+fi
+
+mode=bot
+if [[ -n $caddyfile_mount &&
+      $(readlink -f -- "$caddyfile_mount") == $(readlink -f -- ./Caddyfile) &&
+      $caddy_service == caddy && -n $caddy_project &&
+      $caddy_project != '<no value>' && $caddy_project != '<nil>' ]]; then
+  mode=managed
+elif [[ -n $caddyfile_mount ]]; then
+  mode=shared
+elif ! "$caddy_container_exists"; then
+  mode=new
+else
+  printf 'Cannot locate the active Caddyfile; refusing to start a second Caddy.\n' >&2
+  exit 1
+fi
+
+if [[ $mode == managed || $mode == new ]] &&
+   ! grep -Fq '{$PUBLIC_HOST' ./Caddyfile &&
+   ! grep -Fq "$public_host" ./Caddyfile; then
+  printf 'Bundled Caddyfile does not include PUBLIC_HOST or %s; update its site address before restarting.\n' "$public_host" >&2
+  exit 1
+fi
+
+if [[ $mode == shared && ( -n $cabinet_subdomain || -n $admin_subdomain ) ]]; then
+  printf 'Shared Caddy detected; updating its existing site instead of starting bundled Caddy.\n'
+  if [[ ! -f $caddyfile_mount || ! -w $caddyfile_mount ||
+        $(docker inspect --format '{{.State.Running}}' link-bot-caddy) != true ]]; then
+    printf 'The shared Caddyfile is unavailable or its container is stopped.\n' >&2
+    exit 1
+  fi
+
+  backup=$(mktemp "${caddyfile_mount}.link-bot-backup.XXXXXX")
+  cp -p -- "$caddyfile_mount" "$backup"
+
+  restore_caddyfile() {
+    cat "$backup" > "$caddyfile_mount"
+    docker exec link-bot-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
+  }
+
+  for extra_subdomain in "$cabinet_subdomain" "$admin_subdomain"; do
+    [[ -n $extra_subdomain ]] || continue
+    if ! bash ./scripts/ensure-caddy-host.sh "$caddyfile_mount" "$public_host" "${extra_subdomain}.${public_host}"; then
+      restore_caddyfile
+      printf 'Shared Caddyfile was not changed.\n' >&2
+      exit 1
+    fi
+  done
+  if ! docker exec link-bot-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile ||
+     ! docker exec link-bot-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+    restore_caddyfile
+    printf 'Caddy rejected the updated config; restored backup %s\n' "$backup" >&2
+    exit 1
+  fi
+  if cmp -s "$backup" "$caddyfile_mount"; then
+    rm -f -- "$backup"
+  else
+    printf 'Shared Caddyfile backup: %s\n' "$backup"
+  fi
+fi
+
+export LINK_BOT_VERSION=$(git describe --tags --always 2>/dev/null || printf 'dev')
+export LINK_BOT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || printf 'none')
+
+# Keep Docker's detailed output available on failure, while showing concise
+# progress in an interactive terminal. CI and verbose runs keep raw output.
+phase_total=5
+if [[ $mode == managed || $mode == new ]]; then ((phase_total += 1)); fi
+if [[ -n $cabinet_subdomain ]]; then ((phase_total += 1)); fi
+if [[ -n $admin_subdomain ]]; then ((phase_total += 1)); fi
+phase_current=0
+animate_update=false
+if [[ -t 1 && ${TERM:-dumb} != dumb && ${LINK_BOT_UPDATE_VERBOSE:-0} != 1 ]]; then
+  animate_update=true
+fi
+
+run_phase() {
+  local label=$1 log pid started status frame=0
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  shift
+  ((phase_current += 1))
+
+  if ! "$animate_update"; then
+    printf '[%d/%d] %s\n' "$phase_current" "$phase_total" "$label"
+    if "$@"; then
+      printf '✓ %s\n' "$label"
+      return 0
+    else
+      status=$?
+    fi
+    printf '✗ %s\n' "$label" >&2
+    return "$status"
+  fi
+
+  log=$(mktemp "${TMPDIR:-/tmp}/link-bot-update.XXXXXX")
+  started=$SECONDS
+  "$@" >"$log" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r\033[2K  \033[36m%s\033[0m [%d/%d] %s · %d с' \
+      "${frames[frame]}" "$phase_current" "$phase_total" "$label" "$((SECONDS - started))"
+    frame=$(((frame + 1) % ${#frames[@]}))
+    sleep 0.12
+  done
+
+  if wait "$pid"; then
+    printf '\r\033[2K  \033[32m✓\033[0m [%d/%d] %s · %d с\n' \
+      "$phase_current" "$phase_total" "$label" "$((SECONDS - started))"
+    rm -f -- "$log"
+    return 0
+  else
+    status=$?
+  fi
+  printf '\r\033[2K  \033[31m✗\033[0m [%d/%d] %s\n' \
+    "$phase_current" "$phase_total" "$label" >&2
+  printf 'Последние строки журнала:\n' >&2
+  tail -n 80 -- "$log" >&2
+  printf 'Полный журнал: %s\n' "$log" >&2
+  return "$status"
+}
+
+if "$animate_update"; then
+  printf '\n\033[1;36mLink-Bot\033[0m · обновление %s\n\n' "$LINK_BOT_VERSION"
+fi
+
+run_phase 'Подготовка базы данных' docker compose up -d --no-recreate db
+run_phase 'Сборка новой версии' docker compose build bot
+run_phase 'Подключение обновлений из Mini App' bash ./scripts/install-update-agent.sh
+run_phase 'Перезапуск бота' docker compose up -d --force-recreate --no-deps bot
+
+if [[ $mode == managed ]]; then
+  run_phase 'Обновление веб-сервера' docker compose -p "$caddy_project" --profile standalone up -d --force-recreate --no-deps caddy
+elif [[ $mode == new ]]; then
+  run_phase 'Запуск веб-сервера' docker compose --profile standalone up -d --no-deps caddy
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  printf 'curl is required to verify the HTTPS endpoints.\n' >&2
+  exit 1
+fi
+
+verify_https() {
+  local host=$1 path=$2 label=$3 attempt last_error=""
+  for ((attempt = 1; attempt <= 6; attempt++)); do
+    if last_error=$(curl --noproxy '*' --silent --show-error --fail --output /dev/null --max-time 4 \
+      --resolve "${host}:443:127.0.0.1" "https://${host}${path}" 2>&1); then
+      printf '%s HTTPS is ready: https://%s%s\n' "$label" "$host" "$path"
+      return 0
+    fi
+    if ((attempt < 6)); then sleep 3; fi
+  done
+  printf '%s HTTPS is not ready at https://%s%s.\n' "$label" "$host" "$path" >&2
+  printf 'Last HTTPS check: %s\n' "$last_error" >&2
+  printf 'Check application startup: docker logs --tail 100 link-bot\n' >&2
+  printf 'Check proxy/TLS: docker logs --tail 100 link-bot-caddy\n' >&2
+  return 1
+}
+
+run_phase 'Проверка HTTPS лендинга' verify_https "$public_host" / Landing
+if [[ -n $cabinet_subdomain ]]; then
+  run_phase 'Проверка HTTPS кабинета' verify_https "${cabinet_subdomain}.${public_host}" /mini-app/ Cabinet
+fi
+if [[ -n $admin_subdomain ]]; then
+  run_phase 'Проверка HTTPS админки' verify_https "${admin_subdomain}.${public_host}" / Admin
+fi

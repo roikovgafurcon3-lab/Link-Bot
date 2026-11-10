@@ -1,0 +1,169 @@
+/* Numeric fields are edited directly, without browser or library steppers. */
+.admin-device-traffic__hint { margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.device-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+.device-row__actions { display: flex; align-items: center; gap: 10px; }
+.device-usage { width: 88px; flex: 0 0 88px; min-width: 0; }
+.device-usage__labels { color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; line-height: 1.5; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.device-usage__labels > span + span { display: none; }
+.device-usage__track { height: 5px; margin-top: 5px; overflow: hidden; border-radius: 999px; background: var(--accent-soft, #acb8cc26); }
+.device-usage__track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent, #acb8cc); }
+.device-usage.is-exhausted .device-usage__track > span { background: #d78383; }
+.device-usage__status { display: block; margin-top: 4px; font-size: 8px; color: #d78383; text-align: right; }
+.device-usage--unknown { font-size: 9px; color: var(--muted); text-align: right; line-height: 1.4; }
+.device-tabs { display: flex; gap: 4px; padding: 4px; margin: 4px 0 14px; border-radius: 12px; background: #ffffff04; }
+.device-tabs > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 1; min-height: 36px; padding: 6px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; font: inherit; font-size: 10px; cursor: pointer; transition: color 180ms, background 180ms; }
+.device-tabs > button[aria-selected="true"] { color: var(--text); background: #ffffff08; }
+.device-tabs > button > span { color: var(--muted); font-size: 9px; }
+.device-controls-hint { margin: 0 0 12px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.device-row--managed .device-row__actions { gap: 3px; }
+.device-row--managed .device-usage { width: 72px; flex-basis: 72px; }
+.device-row__toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 34px; padding: 6px; border: 0; border-radius: 8px; color: var(--icon-color); background: transparent; cursor: pointer; transition: color 180ms, background 180ms; }
+.device-row__toggle svg { width: 20px; height: 20px; animation: device-signal-in 260ms ease both; }
+.device-row__toggle.is-paused { color: var(--muted); }
+.device-row__toggle:hover, .device-row__toggle:focus-visible { background: #ffffff08; }
+.device-row__toggle.is-loading svg { animation: device-signal-busy 900ms ease-in-out infinite alternate; }
+.device-row__state { color: var(--muted); font-size: 9px; }
+.device-row--paused .device-usage__track > span { background: var(--muted); }
+.device-usage-action { position: relative; display: block; padding: 5px 0; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; }
+.device-usage-action__edit { position: absolute; right: -2px; bottom: -6px; display: grid; place-items: center; width: 13px; height: 13px; color: var(--muted); }
+.device-usage-action__edit svg { width: 9px; height: 9px; }
+.device-inline-editor { grid-column: 2 / -1; display: grid; gap: 10px; margin: 5px 0 9px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: #00000014; }
+.device-inline-editor label { display: grid; gap: 8px; color: var(--text); font-size: 11px; }
+.device-inline-editor input { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: #ffffff04; color: var(--text); font: inherit; font-size: 12px; }
+.device-inline-editor p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.device-inline-editor > div { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.device-inline-editor button, .device-unblock { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 6px 9px; border: 0; border-radius: 8px; background: #ffffff06; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; }
+.device-inline-editor button.is-primary { color: var(--icon-color); background: var(--accent-soft); }
+.device-inline-editor button.is-danger { color: var(--danger); }
+.device-unblock { font-size: 9px; }
+.device-unblock svg { width: 15px; height: 15px; }
+.device-row :is(button, input):focus-visible, .device-tabs button:focus-visible { outline: 2px solid var(--icon-color); outline-offset: 2px; }
+.device-row button:disabled { opacity: .5; cursor: wait; }
+@keyframes device-signal-in { from { opacity: .25; transform: scale(.78); } to { opacity: 1; transform: scale(1); } }
+@keyframes device-signal-busy { from { opacity: .3; } to { opacity: 1; } }
+@media (max-width: 360px) {
+  .device-row--managed { grid-template-columns: 18px minmax(0, 1fr) auto; gap: 5px; }
+  .device-row--managed .device-usage { width: 57px; flex-basis: 57px; }
+  .device-row--managed .device-row__title { font-size: 11px; }
+  .device-row--managed .device-row__date { font-size: 8px; }
+  .device-row--managed .device-row__delete, .device-row__toggle { width: 29px; }
+  .device-unblock { padding: 6px; font-size: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .device-row__toggle, .device-tabs > button { transition: none; }
+  .device-row__toggle svg, .device-row__toggle.is-loading svg { animation: none; }
+}
+
+/* Dropdown indicators are icons, independent of decorative frame visibility. */
+:root {
+  --select-chevron-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m5 9 7 7 7-7' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.admin-localization-select::after,
+:is(.mantine-Select-section, .mantine-MultiSelect-section, .mantine-NativeSelect-section)[data-position="right"]:has([data-combobox-chevron])::after {
+  content: ''; position: absolute; top: 50%; width: 16px; height: 16px;
+  border: 0; pointer-events: none; background: var(--icon-color, currentColor);
+  -webkit-mask: var(--select-chevron-mask) center / contain no-repeat;
+  mask: var(--select-chevron-mask) center / contain no-repeat;
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1);
+}
+.admin-localization-select::after { inset-inline-end: 12px; transform: translateY(-50%); }
+.admin-localization-select[aria-expanded="true"]::after { transform: translateY(-50%) rotate(180deg); }
+:is(.mantine-Select-section, .mantine-MultiSelect-section, .mantine-NativeSelect-section)[data-position="right"]:has([data-combobox-chevron])::after {
+  left: 50%; transform: translate(-50%, -50%);
+}
+:is(.mantine-Select-section, .mantine-MultiSelect-section, .mantine-NativeSelect-section)[data-position="right"] [data-combobox-chevron] { visibility: hidden; }
+:is(.mantine-Select-wrapper, .mantine-MultiSelect-wrapper):has([aria-expanded="true"]) [data-position="right"]::after { transform: translate(-50%, -50%) rotate(180deg); }
+@supports selector(select:open) {
+  .mantine-NativeSelect-wrapper:has(select:open) [data-position="right"]::after { transform: translate(-50%, -50%) rotate(180deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-localization-select::after,
+  :is(.mantine-Select-section, .mantine-MultiSelect-section, .mantine-NativeSelect-section)[data-position="right"]::after { transition: none; }
+}
+:root input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+:root input[type="number"]::-webkit-inner-spin-button,
+:root input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+:root .mantine-NumberInput-controls { display: none !important; }
+
+/* Native checkboxes share one track/thumb selector in every state. Only inputs
+   with a separate visual track are excluded; integrations and My Tax are native
+   inputs too. Styling the thumb without its track leaves it at the page origin.
+   Retain native checked/indeterminate behavior and delegated change events. */
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input)),
+:root .mantine-CheckboxIndicator-indicator,
+:root .control-switch-indicator,
+:root .admin-access__permission > i,
+:root .payments-switch__box {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  position: relative;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 34px !important;
+  height: 20px !important;
+  min-width: 34px;
+  min-height: 20px !important;
+  flex: 0 0 34px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line, #323741) !important;
+  border-radius: 999px !important;
+  background: var(--control-bg, #20242b) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background-color 180ms ease, border-color 180ms ease;
+}
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input))::before,
+:root .mantine-CheckboxIndicator-indicator::before,
+:root .control-switch-indicator::before,
+:root .admin-access__permission > i::before,
+:root .payments-switch__box::before {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: var(--muted, #979ba5);
+  transition: transform 180ms ease, background-color 180ms ease;
+}
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input)):checked,
+:root .mantine-CheckboxIndicator-indicator[data-checked],
+:root [aria-pressed="true"] .control-switch-indicator,
+:root .admin-access__permission input:checked + i,
+:root .payments-switch__input:checked + .payments-switch__box {
+  background: var(--accent-soft, #acb8cc26) !important;
+  border-color: var(--accent, #acb8cc) !important;
+}
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input)):checked::before,
+:root .mantine-CheckboxIndicator-indicator[data-checked]::before,
+:root [aria-pressed="true"] .control-switch-indicator::before,
+:root .admin-access__permission input:checked + i::before,
+:root .payments-switch__input:checked + .payments-switch__box::before {
+  transform: translateX(14px);
+  background: var(--accent, #acb8cc);
+}
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input)):indeterminate::before,
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input))[data-indeterminate]::before,
+:root .mantine-CheckboxIndicator-indicator[data-indeterminate]::before { transform: translateX(7px); background: var(--accent, #acb8cc); }
+:root .mantine-Checkbox-inner { width: 34px; height: 20px; flex: 0 0 34px; }
+/* Mantine menus reserve only an icon's width by default. */
+:root .mantine-Menu-itemSection:has(.mantine-Checkbox-root) { min-width: 34px; flex-shrink: 0; }
+:root .control-switch-indicator { display: inline-block; }
+/* Focus belongs to the visible track, never to an invisible proxy input. */
+:root .payments-switch__input:focus-visible + .payments-switch__box { outline: 2px solid var(--accent, #acb8cc); outline-offset: 3px; }
+:root .mantine-Checkbox-icon,
+:root .mantine-CheckboxIndicator-icon,
+:root .admin-access__permission > i > svg,
+:root .payments-switch__box::after { display: none !important; }
+:root .admin-squad-option { grid-template-columns: 34px minmax(0, 1fr); }
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input)):focus-visible { outline: 2px solid var(--accent, #acb8cc); outline-offset: 3px; }
+:root input[type="checkbox"]:not(:where(.mantine-Switch-input, .admin-toggle input, .payments-switch__input, .theme-switch__input, .admin-access__permission input)):disabled { opacity: .48; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+  :root input[type="checkbox"], :root input[type="checkbox"]::before,
+  :root .mantine-CheckboxIndicator-indicator, :root .mantine-CheckboxIndicator-indicator::before,
+  :root .control-switch-indicator, :root .control-switch-indicator::before,
+  :root .admin-access__permission > i::before, :root .payments-switch__box::before { transition: none; }
+}

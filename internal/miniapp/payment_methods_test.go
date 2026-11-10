@@ -1,0 +1,96 @@
+package miniapp
+
+import (
+	"reflect"
+	"testing"
+
+	"link-bot/internal/database"
+)
+
+func TestMapPaymentMethodsKeepsCheckoutOrder(t *testing.T) {
+	methods := map[string]bool{
+		"sbp":    true,
+		"card":   true,
+		"stars":  true,
+		"crypto": true,
+	}
+
+	got := mapPaymentMethods(methods, nil)
+	ids := make([]string, 0, len(got))
+	for _, method := range got {
+		ids = append(ids, method.ID)
+	}
+
+	want := []string{"sbp", "card", "stars", "crypto"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("payment method order = %v, want %v", ids, want)
+	}
+}
+
+func TestMapPaymentMethodsUsesConfiguredOrderAndSkipsUnavailable(t *testing.T) {
+	methods := map[string]bool{"sbp": true, "card": true, "stars": true}
+	got := mapPaymentMethods(methods, []string{"stars", "missing", "card", "stars"})
+	ids := make([]string, 0, len(got))
+	for _, method := range got {
+		ids = append(ids, method.ID)
+	}
+	if want := []string{"stars", "card", "sbp"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("payment method order = %v, want %v", ids, want)
+	}
+}
+
+func TestMapPaymentMethodRoutesSbpAndCardToYookassa(t *testing.T) {
+	for _, method := range []string{"sbp", "card"} {
+		invoiceType, err := mapPaymentMethod(method)
+		if err != nil {
+			t.Fatalf("mapPaymentMethod(%q): %v", method, err)
+		}
+		if invoiceType != database.InvoiceTypeYookasa {
+			t.Fatalf("mapPaymentMethod(%q) = %q, want %q", method, invoiceType, database.InvoiceTypeYookasa)
+		}
+	}
+}
+
+func TestMapPaymentMethodRoutesPally(t *testing.T) {
+	invoiceType, err := mapPaymentMethod("pally")
+	if err != nil {
+		t.Fatalf("mapPaymentMethod(pally): %v", err)
+	}
+	if invoiceType != database.InvoiceTypePally {
+		t.Fatalf("mapPaymentMethod(pally) = %q, want %q", invoiceType, database.InvoiceTypePally)
+	}
+}
+
+func TestMapPaymentMethodRoutesRollyPayAndCisPay(t *testing.T) {
+	tests := map[string]database.InvoiceType{
+		"rollypay":      database.InvoiceTypeRollyPay,
+		"cispay":        database.InvoiceTypeCisPay,
+		"anore":         database.InvoiceTypeAnore,
+		"mulenpay":      database.InvoiceTypeMulenPay,
+		"aurapay":       database.InvoiceTypeAuraPay,
+		"paritypay":     database.InvoiceTypeParityPay,
+		"antilopay":     database.InvoiceTypeAntiloPay,
+		"tribute":       database.InvoiceTypeTributeShop,
+		"cloudpayments": database.InvoiceTypeCloudPayments,
+		"datagio":       database.InvoiceTypeDatagio, "kassaai": database.InvoiceTypeKassaAI, "payhot": database.InvoiceTypePayHot, "smerch": database.InvoiceTypeSmerch, "laveshka": database.InvoiceTypeLaveshka,
+	}
+	for method, want := range tests {
+		invoiceType, err := mapPaymentMethod(method)
+		if err != nil {
+			t.Fatalf("mapPaymentMethod(%q): %v", method, err)
+		}
+		if invoiceType != want {
+			t.Fatalf("mapPaymentMethod(%q) = %q, want %q", method, invoiceType, want)
+		}
+	}
+}
+
+func TestMapPaymentMethodRoutesP2P(t *testing.T) {
+	invoiceType, err := mapPaymentMethod("p2p")
+	if err != nil {
+		t.Fatalf("mapPaymentMethod(p2p): %v", err)
+	}
+	if invoiceType != database.InvoiceTypeP2P {
+		t.Fatalf("mapPaymentMethod(p2p) = %q, want %q", invoiceType, database.InvoiceTypeP2P)
+	}
+}

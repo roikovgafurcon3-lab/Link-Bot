@@ -1,0 +1,553 @@
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
+	sq "github.com/Masterminds/squirrel"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+)
+
+var (
+	ErrPromoCodeAlreadyExists = errors.New("promo code already exists")
+	ErrPromoCodeInvalidFormat = errors.New("promo code has invalid format")
+	ErrPromoCodeAlreadyUsed   = errors.New("promo code already used by customer")
+	ErrPromoCodeLimitReached  = errors.New("promo code limit reached")
+	ErrPromoCodeUnavailable   = errors.New("promo code is unavailable")
+	ErrPromoCodeInvalidReward = errors.New("promo code reward is invalid")
+	ErrPromoCodePendingReward = errors.New("promo code has pending reward claims")
+
+	promoCodePattern = regexp.MustCompile(`^[A-Z0-9_-]{3,32}$`)
+)
+
+type PromoCode struct {
+	OwnerCustomerID     *int64     `db:"owner_customer_id"`
+	ID                  int64      `db:"id"`
+	Code                string     `db:"code"`
+	DiscountPercent     int        `db:"discount_percent"`
+	RewardType          string     `db:"reward_type"`
+	RewardValue         int        `db:"reward_value"`
+	RewardTrafficGB     int        `db:"reward_traffic_gb"`
+	IsActive            bool       `db:"is_active"`
+	ExpiresAt           *time.Time `db:"expires_at"`
+	MaxRedemptions      *int       `db:"max_redemptions"`
+	RedemptionCount     int        `db:"redemption_count"`
+	DeletedAt           *time.Time `db:"deleted_at"`
+	CreatedByTelegramID int64      `db:"created_by_telegram_id"`
+	CreatedAt           time.Time  `db:"created_at"`
+	UpdatedAt           time.Time  `db:"updated_at"`
+}
+
+type PromoRewardRedemption struct {
+	ID                 int64
+	Status             string
+	SubscriptionID     *int64
+	TargetExpiresAt    *time.Time
+	TargetTrafficBytes *int64
+}
+
+type PromoCodeRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewPromoCodeRepository(pool *pgxpool.Pool) *PromoCodeRepository {
+	return &PromoCodeRepository{pool: pool}
+}
+
+func NormalizePromoCode(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "")
+	return value
+}
+
+func IsValidPromoCode(value string) bool {
+	return promoCodePattern.MatchString(NormalizePromoCode(value))
+}
+
+func NormalizePromoReward(promo *PromoCode) error {
+	if promo == nil {
+		return ErrPromoCodeInvalidReward
+	}
+	promo.RewardType = strings.ToLower(strings.TrimSpace(promo.RewardType))
+	if promo.RewardType == "" {
+		promo.RewardType = "discount"
+	}
+	switch promo.RewardType {
+	case "discount":
+		if promo.DiscountPercent >= 1 && promo.DiscountPercent <= 99 && promo.RewardValue == 0 && promo.RewardTrafficGB == 0 {
+			return nil
+		}
+	case "balance":
+		if promo.DiscountPercent == 0 && promo.RewardValue >= 1 && promo.RewardValue <= 1000000 && promo.RewardTrafficGB == 0 {
+			return nil
+		}
+	case "days":
+		if promo.DiscountPercent == 0 && promo.RewardValue >= 1 && promo.RewardValue <= 3650 && promo.RewardTrafficGB == 0 {
+			return nil
+		}
+	case "traffic":
+		if promo.DiscountPercent == 0 && promo.RewardValue >= 1 && promo.RewardValue <= 1000000 && promo.RewardTrafficGB == 0 {
+			return nil
+		}
+	case "days_traffic":
+		if promo.DiscountPercent == 0 && promo.RewardValue >= 1 && promo.RewardValue <= 3650 && promo.RewardTrafficGB >= 1 && promo.RewardTrafficGB <= 1000000 {
+			return nil
+		}
+	}
+	return ErrPromoCodeInvalidReward
+}
+
+var promoCodeSelectColumns = []string{
+	"id",
+	"code",
+	"discount_percent",
+	"is_active",
+	"expires_at",
+	"max_redemptions",
+	"redemption_count",
+	"deleted_at",
+	"created_by_telegram_id",
+	"created_at",
+	"updated_at",
+	"reward_type",
+	"reward_value",
+	"reward_traffic_gb",
+	"owner_customer_id",
+}
+
+func promoCodeSelectColumnsWithLiveCount(alias string) []string {
+	if alias == "" {
+		alias = "promo_code"
+	}
+	columns := append([]string(nil), promoCodeSelectColumns...)
+	columns[6] = fmt.Sprintf("(SELECT COUNT(*)::int FROM promo_code_redemption pcr WHERE pcr.promo_code_id = %s.id) AS redemption_count", alias)
+	return columns
+}
+
+func scanPromoCode(scanner interface {
+	Scan(dest ...interface{}) error
+}, promo *PromoCode) error {
+	return scanner.Scan(
+		&promo.ID,
+		&promo.Code,
+		&promo.DiscountPercent,
+		&promo.IsActive,
+		&promo.ExpiresAt,
+		&promo.MaxRedemptions,
+		&promo.RedemptionCount,
+		&promo.DeletedAt,
+		&promo.CreatedByTelegramID,
+		&promo.CreatedAt,
+		&promo.UpdatedAt,
+		&promo.RewardType,
+		&promo.RewardValue,
+		&promo.RewardTrafficGB,
+		&promo.OwnerCustomerID,
+	)
+}
+
+func (r *PromoCodeRepository) Create(ctx context.Context, promo *PromoCode) (*PromoCode, error) {
+	if promo == nil {
+		return nil, errors.New("promo code is nil")
+	}
+
+	code := NormalizePromoCode(promo.Code)
+	if !IsValidPromoCode(code) {
+		return nil, ErrPromoCodeInvalidFormat
+	}
+	if err := NormalizePromoReward(promo); err != nil {
+		return nil, err
+	}
+
+	existing, err := r.FindByCode(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return nil, ErrPromoCodeAlreadyExists
+	}
+
+	builder := sq.Insert("promo_code").
+		Columns(
+			"code",
+			"discount_percent",
+			"is_active",
+			"expires_at",
+			"max_redemptions",
+			"created_by_telegram_id",
+			"reward_type",
+			"reward_value",
+			"reward_traffic_gb",
+		).
+		Values(
+			code,
+			promo.DiscountPercent,
+			promo.IsActive,
+			promo.ExpiresAt,
+			promo.MaxRedemptions,
+			promo.CreatedByTelegramID,
+			promo.RewardType,
+			promo.RewardValue,
+			promo.RewardTrafficGB,
+		).
+		Suffix("RETURNING " + strings.Join(promoCodeSelectColumns, ", ")).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := builder.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build promo insert query: %w", err)
+	}
+
+	created := &PromoCode{}
+	if err := scanPromoCode(r.pool.QueryRow(ctx, sql, args...), created); err != nil {
+		return nil, fmt.Errorf("failed to create promo code: %w", err)
+	}
+
+	return created, nil
+}
+
+func (r *PromoCodeRepository) FindByCode(ctx context.Context, code string) (*PromoCode, error) {
+	normalized := NormalizePromoCode(code)
+	if normalized == "" {
+		return nil, nil
+	}
+
+	builder := sq.Select(promoCodeSelectColumnsWithLiveCount("")...).
+		From("promo_code").
+		Where(sq.Eq{"code": normalized}).
+		Where(sq.Expr("deleted_at IS NULL")).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := builder.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build promo lookup query: %w", err)
+	}
+
+	promo := &PromoCode{}
+	if err := scanPromoCode(r.pool.QueryRow(ctx, sql, args...), promo); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query promo code: %w", err)
+	}
+
+	return promo, nil
+}
+
+func (r *PromoCodeRepository) ListLatest(ctx context.Context, limit int) ([]PromoCode, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	builder := sq.Select(promoCodeSelectColumnsWithLiveCount("")...).
+		From("promo_code").
+		Where(sq.Expr("deleted_at IS NULL")).
+		OrderBy("created_at DESC", "id DESC").
+		Limit(uint64(limit)).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := builder.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build promo list query: %w", err)
+	}
+
+	rows, err := r.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query promo codes: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]PromoCode, 0, limit)
+	for rows.Next() {
+		var promo PromoCode
+		if err := scanPromoCode(rows, &promo); err != nil {
+			return nil, fmt.Errorf("failed to scan promo code: %w", err)
+		}
+		result = append(result, promo)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate promo codes: %w", err)
+	}
+
+	return result, nil
+}
+
+func (r *PromoCodeRepository) Delete(ctx context.Context, id int64) error {
+	builder := sq.Update("promo_code").
+		Set("code", sq.Expr("code || '__DELETED_' || id::text || '_' || floor(extract(epoch from now()))::text")).
+		Set("is_active", false).
+		Set("deleted_at", time.Now().UTC()).
+		Set("updated_at", time.Now().UTC()).
+		Where(sq.Eq{"id": id}).
+		Where(sq.Expr("deleted_at IS NULL")).
+		Where(sq.Expr("NOT EXISTS (SELECT 1 FROM promo_code_redemption WHERE promo_code_id = promo_code.id AND status = 'pending')")).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := builder.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build promo delete query: %w", err)
+	}
+
+	result, err := r.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete promo code: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		var pending bool
+		if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM promo_code_redemption WHERE promo_code_id = $1 AND status = 'pending')`, id).Scan(&pending); err != nil {
+			return fmt.Errorf("check pending promo rewards: %w", err)
+		}
+		if pending {
+			return ErrPromoCodePendingReward
+		}
+	}
+
+	return nil
+}
+
+func (r *PromoCodeRepository) HasCustomerRedemption(ctx context.Context, promoCodeID int64, customerID int64) (bool, error) {
+	builder := sq.Select("1").
+		From("promo_code_redemption").
+		Where(sq.Eq{
+			"promo_code_id": promoCodeID,
+			"customer_id":   customerID,
+		}).
+		Limit(1).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := builder.ToSql()
+	if err != nil {
+		return false, fmt.Errorf("failed to build promo redemption query: %w", err)
+	}
+
+	var exists int
+	if err := r.pool.QueryRow(ctx, sql, args...).Scan(&exists); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to query promo redemption: %w", err)
+	}
+
+	return true, nil
+}
+
+func (r *PromoCodeRepository) FindRewardRedemption(ctx context.Context, promoCodeID, customerID int64) (*PromoRewardRedemption, error) {
+	item := &PromoRewardRedemption{}
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, status, subscription_id, target_expires_at, target_traffic_bytes
+		FROM promo_code_redemption
+		WHERE promo_code_id = $1 AND customer_id = $2 AND purchase_id IS NULL
+	`, promoCodeID, customerID).Scan(&item.ID, &item.Status, &item.SubscriptionID, &item.TargetExpiresAt, &item.TargetTrafficBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find promo reward redemption: %w", err)
+	}
+	return item, nil
+}
+
+// AcquireSubscriptionRewardLock serializes panel-target calculations for one
+// customer, including the external panel update. Session locks survive the
+// short claim transaction and work across multiple bot instances.
+func (r *PromoCodeRepository) AcquireSubscriptionRewardLock(ctx context.Context, customerID int64) (func(), error) {
+	return acquireSubscriptionRewardLock(ctx, r.pool, customerID)
+}
+
+func acquireSubscriptionRewardLock(ctx context.Context, pool *pgxpool.Pool, customerID int64) (func(), error) {
+	if customerID <= 0 {
+		return nil, errors.New("customer is required for promo reward lock")
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire promo reward connection: %w", err)
+	}
+	key := -customerID // Wallet locks use the positive customer ID.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("lock subscription promo reward: %w", err)
+	}
+	return func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, key); err != nil {
+			_ = conn.Hijack().Close(unlockCtx)
+			return
+		}
+		conn.Release()
+	}, nil
+}
+
+func (r *PromoCodeRepository) ClaimReward(ctx context.Context, promo *PromoCode, customerID int64, subscriptionID *int64, targetExpiresAt *time.Time, targetTrafficBytes *int64) (*PromoRewardRedemption, error) {
+	if promo == nil || promo.ID <= 0 || promo.RewardType == "discount" || customerID <= 0 {
+		return nil, ErrPromoCodeInvalidReward
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin promo reward claim: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var active bool
+	var expiresAt *time.Time
+	var maxRedemptions *int
+	var deletedAt *time.Time
+	var ownerCustomerID *int64
+	if err := tx.QueryRow(ctx, `
+		SELECT is_active, expires_at, max_redemptions, deleted_at, owner_customer_id
+		FROM promo_code WHERE id = $1 FOR UPDATE
+	`, promo.ID).Scan(&active, &expiresAt, &maxRedemptions, &deletedAt, &ownerCustomerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPromoCodeUnavailable
+		}
+		return nil, fmt.Errorf("lock promo reward: %w", err)
+	}
+
+	if ownerCustomerID != nil && *ownerCustomerID != customerID {
+		return nil, ErrPromoCodeUnavailable
+	}
+	item := &PromoRewardRedemption{}
+	err = tx.QueryRow(ctx, `
+		SELECT id, status, subscription_id, target_expires_at, target_traffic_bytes
+		FROM promo_code_redemption WHERE promo_code_id = $1 AND customer_id = $2
+	`, promo.ID, customerID).Scan(&item.ID, &item.Status, &item.SubscriptionID, &item.TargetExpiresAt, &item.TargetTrafficBytes)
+	if err == nil {
+		if item.Status == "applied" {
+			return nil, ErrPromoCodeAlreadyUsed
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit existing promo reward claim: %w", err)
+		}
+		return item, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("check promo reward claim: %w", err)
+	}
+	if !active || deletedAt != nil || (expiresAt != nil && !expiresAt.After(time.Now().UTC())) {
+		return nil, ErrPromoCodeUnavailable
+	}
+	var used int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*)::int FROM promo_code_redemption WHERE promo_code_id = $1`, promo.ID).Scan(&used); err != nil {
+		return nil, fmt.Errorf("count promo reward claims: %w", err)
+	}
+	if maxRedemptions != nil && used >= *maxRedemptions {
+		return nil, ErrPromoCodeLimitReached
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO promo_code_redemption (promo_code_id, customer_id, status, subscription_id, target_expires_at, target_traffic_bytes)
+		VALUES ($1, $2, 'pending', $3, $4, $5)
+		RETURNING id
+	`, promo.ID, customerID, subscriptionID, targetExpiresAt, targetTrafficBytes).Scan(&item.ID); err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return nil, ErrPromoCodeAlreadyUsed
+		}
+		return nil, fmt.Errorf("insert promo reward claim: %w", err)
+	}
+	item.Status = "pending"
+	item.SubscriptionID = subscriptionID
+	item.TargetExpiresAt = targetExpiresAt
+	item.TargetTrafficBytes = targetTrafficBytes
+	if _, err := tx.Exec(ctx, `UPDATE promo_code SET redemption_count = $2, updated_at = NOW() WHERE id = $1`, promo.ID, used+1); err != nil {
+		return nil, fmt.Errorf("update promo reward count: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit promo reward claim: %w", err)
+	}
+	return item, nil
+}
+
+func (r *PromoCodeRepository) MarkRewardApplied(ctx context.Context, redemptionID int64) error {
+	if redemptionID <= 0 {
+		return errors.New("promo reward redemption is required")
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE promo_code_redemption SET status = 'applied' WHERE id = $1 AND status = 'pending'`, redemptionID); err != nil {
+		return fmt.Errorf("complete promo reward redemption: %w", err)
+	}
+	return nil
+}
+
+func (r *PromoCodeRepository) CompleteRedemption(ctx context.Context, promo *PromoCode, customerID int64, purchaseID int64) error {
+	if promo == nil || promo.ID == 0 || customerID == 0 || purchaseID == 0 {
+		return nil
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin promo redemption tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var current PromoCode
+	queryBuilder := sq.Select(promoCodeSelectColumnsWithLiveCount("")...).
+		From("promo_code").
+		Where(sq.Eq{"id": promo.ID}).
+		Where(sq.Expr("deleted_at IS NULL")).
+		Suffix("FOR UPDATE").
+		PlaceholderFormat(sq.Dollar)
+
+	query, args, err := queryBuilder.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build promo lock query: %w", err)
+	}
+
+	if err := scanPromoCode(tx.QueryRow(ctx, query, args...), &current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrPromoCodeLimitReached
+		}
+		return fmt.Errorf("failed to lock promo code: %w", err)
+	}
+
+	if !current.AvailableToCustomer(customerID) {
+		return ErrPromoCodeUnavailable
+	}
+	if current.MaxRedemptions != nil && current.RedemptionCount >= *current.MaxRedemptions {
+		return ErrPromoCodeLimitReached
+	}
+
+	insertBuilder := sq.Insert("promo_code_redemption").
+		Columns("promo_code_id", "customer_id", "purchase_id").
+		Values(current.ID, customerID, purchaseID).
+		PlaceholderFormat(sq.Dollar)
+
+	insertSQL, insertArgs, err := insertBuilder.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build promo redemption insert: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, insertSQL, insertArgs...); err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return ErrPromoCodeAlreadyUsed
+		}
+		return fmt.Errorf("failed to insert promo redemption: %w", err)
+	}
+
+	updateBuilder := sq.Update("promo_code").
+		Set("redemption_count", sq.Expr("(SELECT COUNT(*)::int FROM promo_code_redemption WHERE promo_code_id = promo_code.id)")).
+		Set("updated_at", time.Now().UTC()).
+		Where(sq.Eq{"id": current.ID}).
+		PlaceholderFormat(sq.Dollar)
+
+	updateSQL, updateArgs, err := updateBuilder.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build promo counter update: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, updateSQL, updateArgs...); err != nil {
+		return fmt.Errorf("failed to update promo redemption count: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit promo redemption tx: %w", err)
+	}
+
+	return nil
+}

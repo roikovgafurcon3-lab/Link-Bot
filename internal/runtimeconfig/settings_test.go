@@ -1,0 +1,1910 @@
+package runtimeconfig
+
+import (
+	"encoding/json"
+	"math"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"link-bot/internal/database"
+)
+
+func TestBottomNavStyleDefaultsValidationAndRoundTrip(t *testing.T) {
+	for _, style := range []string{"", "classic", "contour", "notch", "capsule"} {
+		t.Run(style, func(t *testing.T) {
+			settings := DefaultSettings()
+			settings.Appearance.BottomNavStyle = style
+			if err := NormalizeAndValidate(&settings); err != nil {
+				t.Fatal(err)
+			}
+			want := style
+			if want == "" {
+				want = "classic"
+			}
+			data, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restored Settings
+			if err := json.Unmarshal(data, &restored); err != nil {
+				t.Fatal(err)
+			}
+			if restored.Appearance.BottomNavStyle != want {
+				t.Fatalf("style = %q, want %q", restored.Appearance.BottomNavStyle, want)
+			}
+		})
+	}
+	settings := DefaultSettings()
+	settings.Appearance.BottomNavStyle = "invalid"
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("invalid navigation style accepted")
+	}
+}
+
+func TestNormalizeAndValidatePaymentMethodOrder(t *testing.T) {
+	settings := DefaultSettings()
+	settings.PaymentMethodOrder = []string{"stars", "CARD", "stars", "unknown", "sbp"}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if want := []string{"stars", "card", "sbp", "balance", "p2p", "crypto", "lava", "wata", "platega", "freekassa", "heleket", "pally", "rollypay", "cispay", "anore", "mulenpay", "aurapay", "antilopay", "paritypay", "tribute", "cloudpayments", "datagio", "kassaai", "payhot", "smerch", "laveshka"}; !reflect.DeepEqual(settings.PaymentMethodOrder, want) {
+		t.Fatalf("payment method order = %v, want %v", settings.PaymentMethodOrder, want)
+	}
+}
+
+func TestNormalizeAndValidateHiddenServerNodes(t *testing.T) {
+	settings := DefaultSettings()
+	settings.HiddenServerNodes = []string{" UUID:ABC-123 ", "uuid:abc-123", "address:de.example|germany"}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"address:de.example|germany", "uuid:abc-123"}
+	if !reflect.DeepEqual(settings.HiddenServerNodes, want) {
+		t.Fatalf("hidden server nodes = %v, want %v", settings.HiddenServerNodes, want)
+	}
+}
+
+func TestNormalizeAndValidateMissingPaymentMethodOrderUsesDefault(t *testing.T) {
+	settings := DefaultSettings()
+	settings.PaymentMethodOrder = nil
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if want := DefaultPaymentMethodOrder(); !reflect.DeepEqual(settings.PaymentMethodOrder, want) {
+		t.Fatalf("payment method order = %v, want %v", settings.PaymentMethodOrder, want)
+	}
+}
+
+func TestNormalizeAndValidatePreservesPlanOrder(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{
+		{ID: "custom_a", Enabled: true, Months: 1, PriceRub: 100},
+		{ID: "custom_b", Enabled: true, Months: 2, PriceRub: 200},
+	}
+	settings.Plans[0], settings.Plans[1] = settings.Plans[1], settings.Plans[0]
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Plans[0].ID != "custom_b" || settings.Plans[1].ID != "custom_a" {
+		t.Fatalf("plan order was not preserved: %s, %s", settings.Plans[0].ID, settings.Plans[1].ID)
+	}
+}
+
+func TestDefaultSettingsStartsWithoutPlans(t *testing.T) {
+	settings := DefaultSettings()
+	if len(settings.Plans) != 0 {
+		t.Fatalf("default plans length = %d, want 0", len(settings.Plans))
+	}
+	if got := settings.Appearance.Colors["unlimitedBadge"]; got != "#949494" {
+		t.Fatalf("default unlimited badge color = %q, want #949494", got)
+	}
+	if settings.Grace.Enabled || settings.Grace.Days != 1 || len(settings.Grace.InternalSquadUUIDs) != 0 {
+		t.Fatalf("unexpected default grace settings: %+v", settings.Grace)
+	}
+	if len(settings.DevicePacks) != 3 {
+		t.Fatalf("default device packs length = %d, want 3", len(settings.DevicePacks))
+	}
+	if settings.Panel.UsernameTemplate != "{{customer_id}}_{{telegram_id}}" {
+		t.Fatalf("default username template = %q", settings.Panel.UsernameTemplate)
+	}
+	if !strings.Contains(settings.Content.PaymentNotification.Text, "{{price}}") ||
+		!settings.Content.PaymentNotification.OpenUserButton.Enabled ||
+		!settings.Content.PaymentNotification.ProfileButton.Enabled {
+		t.Fatalf("unexpected default payment notification settings: %+v", settings.Content.PaymentNotification)
+	}
+	if strings.TrimSpace(settings.Content.Gift.Sender.Text) == "" || strings.TrimSpace(settings.Content.Gift.Recipient.Text) == "" ||
+		len(settings.Content.Gift.Sender.Buttons) == 0 || settings.Content.Gift.Sender.Buttons[0].Type != "gift" {
+		t.Fatalf("unexpected default gift settings: %+v", settings.Content.Gift)
+	}
+}
+
+func TestLocalizationFontsDefaultAndValidate(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Localization.FontFamilyRU = ""
+	settings.Localization.FontFamilyEN = ""
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.Localization.FontFamilyRU != "montserrat" || settings.Localization.FontFamilyEN != "inter" {
+		t.Fatalf("unexpected migrated fonts: %+v", settings.Localization)
+	}
+	for _, font := range []string{"montserrat", "golos", "rubik", "manrope", "onest"} {
+		settings := DefaultSettings()
+		settings.Localization.FontFamilyRU = font
+		if err := NormalizeAndValidate(&settings); err != nil {
+			t.Errorf("Russian font %q: %v", font, err)
+		}
+	}
+	for _, font := range []string{"inter", "dmsans", "jakarta", "outfit", "spacegrotesk"} {
+		settings := DefaultSettings()
+		settings.Localization.FontFamilyEN = font
+		if err := NormalizeAndValidate(&settings); err != nil {
+			t.Errorf("English font %q: %v", font, err)
+		}
+	}
+	settings = DefaultSettings()
+	settings.Localization.FontFamilyRU = "unknown"
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("unknown Russian font was accepted")
+	}
+}
+
+func TestNormalizeAndValidateReferralRewards(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Referrals.Trial = ReferralRewardSettings{Days: 2, TrafficGB: 10, BalanceMode: "fixed", BalanceRub: 50, BalancePercent: 20}
+	settings.Referrals.Purchase = ReferralRewardSettings{Days: 5, TrafficGB: 25, BalanceMode: "percent", BalanceRub: 100, BalancePercent: 15}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Referrals.Trial.BalancePercent != 0 {
+		t.Fatalf("trial inactive percentage was not cleared: %+v", settings.Referrals.Trial)
+	}
+	if settings.Referrals.Purchase.BalanceRub != 0 || settings.Referrals.Purchase.BalancePercent != 15 {
+		t.Fatalf("purchase reward mode was not normalized: %+v", settings.Referrals.Purchase)
+	}
+}
+
+func TestNormalizeAndValidateRejectsTrialPercentageReward(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Referrals.Trial.BalanceMode = "percent"
+	settings.Referrals.Trial.BalancePercent = 10
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "only available for purchase") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want trial percentage error", err)
+	}
+}
+
+func TestNormalizeAndValidateMigratesReferralDefaults(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 16
+	settings.Referrals = ReferralSettings{}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if !settings.Referrals.BalancePaymentsEnabled || !settings.Referrals.WithdrawalsEnabled || settings.Referrals.MinimumWithdrawalRub != 500 {
+		t.Fatalf("referral defaults were not migrated: %+v", settings.Referrals)
+	}
+}
+
+func TestNormalizeGiftMessageSettingsPreservesDynamicGiftButton(t *testing.T) {
+	defaults := DefaultSettings().Content.Gift.Sender
+	message := TelegramGiftMessageSettings{
+		Text: " <b>Подарок для {recipient}</b> ",
+		Buttons: []database.BroadcastButton{{
+			ID: "gift_link", Type: "gift", Text: " Открыть подарок ", Style: " PRIMARY ",
+		}},
+	}
+	if err := NormalizeGiftMessageSettings(&message, defaults); err != nil {
+		t.Fatalf("NormalizeGiftMessageSettings() error = %v", err)
+	}
+	if message.Text != "<b>Подарок для {recipient}</b>" || len(message.Buttons) != 1 {
+		t.Fatalf("unexpected normalized gift message: %+v", message)
+	}
+	button := message.Buttons[0]
+	if button.Type != "gift" || button.URL != "" || button.Text != "Открыть подарок" || button.Style != "primary" {
+		t.Fatalf("unexpected normalized gift button: %+v", button)
+	}
+}
+
+func TestNormalizeGiftMessageSettingsRejectsUnsafeURL(t *testing.T) {
+	defaults := DefaultSettings().Content.Gift.Recipient
+	message := TelegramGiftMessageSettings{
+		Text:    "Подарок",
+		Buttons: []database.BroadcastButton{{ID: "bad", Type: "url", Text: "Открыть", URL: "javascript:alert(1)"}},
+	}
+	if err := NormalizeGiftMessageSettings(&message, defaults); err == nil {
+		t.Fatal("expected unsafe gift button URL error")
+	}
+}
+
+func TestLocalizeTelegramDefaultsTranslatesBundledTextAndPreservesCustomText(t *testing.T) {
+	content := DefaultSettings().Content
+	content.StartMenu.SupportButton.Text = "My custom support button"
+
+	localized := LocalizeTelegramDefaults(content, "fa")
+	if localized.StartMenu.PlansButton.Text != "تعرفه‌ها" {
+		t.Fatalf("Persian plans button = %q", localized.StartMenu.PlansButton.Text)
+	}
+	if localized.Commerce.PayButton.Text != "پرداخت" {
+		t.Fatalf("Persian pay button = %q", localized.Commerce.PayButton.Text)
+	}
+	if localized.StartMenu.SupportButton.Text != "My custom support button" {
+		t.Fatalf("custom button was overwritten: %q", localized.StartMenu.SupportButton.Text)
+	}
+
+	english := LocalizeTelegramDefaults(localized, "en")
+	if english.StartMenu.PlansButton.Text != "Plans" || english.Commerce.PayButton.Text != "Pay" {
+		t.Fatalf("English defaults were not restored: %+v", english.StartMenu)
+	}
+}
+
+func TestNormalizeAndValidateMigratesPaymentNotificationDefaults(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 13
+	settings.Content.PaymentNotification = TelegramPaymentNotificationSettings{}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if strings.TrimSpace(settings.Content.PaymentNotification.Text) == "" ||
+		!settings.Content.PaymentNotification.OpenUserButton.Enabled ||
+		!settings.Content.PaymentNotification.ProfileButton.Enabled {
+		t.Fatalf("payment notification defaults were not migrated: %+v", settings.Content.PaymentNotification)
+	}
+}
+
+func TestNormalizeAndValidatePreservesDisabledPaymentNotificationButtons(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.PaymentNotification.OpenUserButton.Enabled = false
+	settings.Content.PaymentNotification.ProfileButton.Enabled = false
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Content.PaymentNotification.OpenUserButton.Enabled || settings.Content.PaymentNotification.ProfileButton.Enabled {
+		t.Fatalf("disabled payment notification buttons were re-enabled: %+v", settings.Content.PaymentNotification)
+	}
+}
+
+func TestPaymentNotificationButtonJSONUsesEditorFields(t *testing.T) {
+	raw, err := json.Marshal(DefaultSettings().Content.PaymentNotification.OpenUserButton)
+	if err != nil {
+		t.Fatalf("marshal payment notification button: %v", err)
+	}
+	encoded := string(raw)
+	for _, field := range []string{`"enabled":true`, `"text":"Открыть пользователя в панели"`, `"iconCustomEmojiId"`, `"style":"primary"`} {
+		if !strings.Contains(encoded, field) {
+			t.Fatalf("payment notification button JSON %s does not contain %s", encoded, field)
+		}
+	}
+}
+
+func TestNormalizeAndValidateDevicePacks(t *testing.T) {
+	settings := DefaultSettings()
+	settings.DevicePacks = []DevicePackSettings{
+		{ID: " pack_5 ", Devices: 5, PriceRub: 149},
+		{ID: "pack_10", Devices: 10, PriceRub: 249},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if len(settings.DevicePacks) != 2 || settings.DevicePacks[0].ID != "pack_5" {
+		t.Fatalf("unexpected device packs: %+v", settings.DevicePacks)
+	}
+	if settings.DevicePacks[0].PriceStars < 1 {
+		t.Fatalf("device pack Stars price was not derived: %+v", settings.DevicePacks[0])
+	}
+}
+
+func TestNormalizeAndValidateRejectsInvalidDevicePack(t *testing.T) {
+	settings := DefaultSettings()
+	settings.DevicePacks = []DevicePackSettings{{ID: "pack_0", Devices: 0, PriceRub: 100}}
+
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "invalid device count") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want invalid device count", err)
+	}
+}
+
+func TestNormalizeAndValidateMigratesDevicePackDefaultsAndNotifications(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 11
+	settings.DevicePacks = nil
+	settings.Content.Copy = map[string]map[string]string{"ru": {}}
+	settings.Trial = TrialSettings{
+		Enabled:              true,
+		Days:                 9,
+		TrafficGB:            77,
+		DeviceLimit:          4,
+		TrafficResetStrategy: "WEEK",
+		Tag:                  "custom-trial",
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if len(settings.DevicePacks) != 3 {
+		t.Fatalf("migrated device packs length = %d, want 3", len(settings.DevicePacks))
+	}
+	for _, key := range []string{"deviceAddedTemplate", "deviceLimitReachedTemplate", "reviewCreatedTemplate"} {
+		if strings.TrimSpace(settings.Content.Copy["ru"][key]) == "" {
+			t.Fatalf("migrated notification %q is empty", key)
+		}
+	}
+	if !settings.Trial.Enabled || settings.Trial.Days != 9 || settings.Trial.TrafficGB != 77 || settings.Trial.DeviceLimit != 4 || settings.Trial.TrafficResetStrategy != "WEEK" || settings.Trial.Tag != "custom-trial" {
+		t.Fatalf("custom trial settings changed during migration: %+v", settings.Trial)
+	}
+}
+
+func TestNormalizeAndValidatePanelUsernameTemplate(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Panel.UsernameTemplate = "tg_{{telegram_id}}"
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Panel.UsernameTemplate != "tg_{{telegram_id}}" {
+		t.Fatalf("username template = %q", settings.Panel.UsernameTemplate)
+	}
+}
+
+func TestNormalizeAndValidateGraceAccess(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Grace = GraceSettings{
+		Enabled:            true,
+		Days:               2,
+		InternalSquadUUIDs: []string{"7d3258cf-2b39-4ad0-8b11-fbcd30d76348"},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if !settings.Grace.Enabled || settings.Grace.Days != 2 || len(settings.Grace.InternalSquadUUIDs) != 1 {
+		t.Fatalf("unexpected normalized grace settings: %+v", settings.Grace)
+	}
+}
+
+func TestNormalizeAndValidateRejectsGraceWithoutSquad(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Grace = GraceSettings{Enabled: true, Days: 2}
+
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "requires at least one internal squad") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want missing squad error", err)
+	}
+}
+
+func TestNormalizeAndValidateAllowsCustomPlanAndDeletion(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{
+		{
+			ID: "custom_2m", Enabled: true, Months: 2,
+			PriceRub: 199, TrafficGB: 250, DeviceLimit: 4,
+		},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if len(settings.Plans) != 1 {
+		t.Fatalf("plans length = %d, want 1", len(settings.Plans))
+	}
+	plan := settings.Plans[0]
+	if plan.ID != "custom_2m" || plan.Months != 2 || plan.TitleRU != "2 месяца" || plan.TitleEN != "2 months" {
+		t.Fatalf("custom plan was not normalized: %+v", plan)
+	}
+}
+
+func TestDailyPlanKeepsDaysAndGeneratesTitles(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{{ID: "custom_7d", Enabled: true, Days: 7, PriceRub: 99, TrafficGB: 20, DeviceLimit: 2}}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	plan := settings.Plans[0]
+	if plan.Months != 0 || plan.Days != 7 || plan.TitleRU != "7 дней" || plan.TitleEN != "7 days" || plan.TitleFA != "7 روز" {
+		t.Fatalf("unexpected daily plan: %+v", plan)
+	}
+	service := &Service{}
+	service.value.Store(settings)
+	checkout, ok := service.CheckoutPlan(plan.ID, 0)
+	if !ok || checkout.Months != 0 || checkout.Days != 7 || checkout.PriceRub != 99 {
+		t.Fatalf("unexpected checkout daily plan: %+v, ok=%v", checkout, ok)
+	}
+	settings.Plans[0].Months = 1
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("expected an error when both months and days are set")
+	}
+}
+
+func TestCheckoutPlansIncludesCustomPlan(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{
+		{ID: "custom_4m", Enabled: true, Months: 4, PriceRub: 299, TrafficGB: 800, DeviceLimit: 8},
+		{ID: "custom_8m", Enabled: true, Months: 8, PriceRub: 499, TrafficGB: 0, UnlimitedTraffic: true, DeviceLimit: 0},
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	service := &Service{}
+	service.value.Store(settings)
+	plans := service.CheckoutPlans()
+	if len(plans) != 2 {
+		t.Fatalf("checkout plans length = %d, want 2", len(plans))
+	}
+	if plans[0].ID != "custom_4m" || plans[0].Months != 4 || plans[0].TrafficLimitBytes != 800*gibibyte || plans[0].DeviceLimitCount != 8 {
+		t.Fatalf("limited custom plan mismatch: %+v", plans[0])
+	}
+	if plans[1].ID != "custom_8m" || plans[1].Variant != "unlimited" || plans[1].TrafficLimitBytes != 0 || plans[1].DeviceLimitCount != 0 {
+		t.Fatalf("unlimited custom plan mismatch: %+v", plans[1])
+	}
+}
+
+func TestPlanTitleUsesRequestedLocale(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Localization.Language = "ru"
+	settings.Plans = []PlanSettings{{ID: "one_month", Enabled: true, Months: 1, PriceRub: 100, TitleRU: "1 месяц", TitleEN: "1 month", TitleFA: "۱ ماه"}}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{}
+	service.value.Store(settings)
+	for _, test := range []struct{ locale, want string }{{"ru", "1 месяц"}, {"en", "1 month"}, {"fa", "۱ ماه"}, {"", "1 месяц"}} {
+		if got := service.PlanTitle("one_month", test.locale); got != test.want {
+			t.Errorf("PlanTitle(%q) = %q, want %q", test.locale, got, test.want)
+		}
+	}
+}
+
+func TestNamedPlanKeepsDurationAsSeparateField(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{{ID: "custom_7d", Enabled: true, Days: 7, Name: "  Weekend  ", PriceRub: 99}}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{}
+	service.value.Store(settings)
+	plan := service.CheckoutPlans()[0]
+	if plan.Name != "Weekend" || plan.Days != 7 || plan.Months != 0 {
+		t.Fatalf("named plan lost its duration or name: %+v", plan)
+	}
+	if got := service.PlanTitle(plan.ID, "ru"); got != "Weekend" {
+		t.Fatalf("named plan title = %q, want Weekend", got)
+	}
+	if settings.Plans[0].TitleRU != "7 дней" {
+		t.Fatalf("duration title = %q, want 7 дней", settings.Plans[0].TitleRU)
+	}
+}
+
+func TestPlanNamesUseLocaleAndFallBackToDuration(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{{ID: "week", Enabled: true, Days: 7, Name: "  Неделя — лайт  ", NameEN: "  Week Light  ", PriceRub: 70}}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{}
+	service.value.Store(settings)
+	for _, test := range []struct{ locale, want string }{{"ru", "Неделя — лайт"}, {"en", "Week Light"}, {"fa", "7 روز"}} {
+		if got := service.PlanTitle("week", test.locale); got != test.want {
+			t.Errorf("PlanTitle(%q) = %q, want %q", test.locale, got, test.want)
+		}
+	}
+	settings.Plans[0].NameEN = ""
+	service.value.Store(settings)
+	if got := service.PlanTitle("week", "en"); got != "7 days" {
+		t.Errorf("empty English name = %q, want 7 days", got)
+	}
+}
+
+func TestCheckoutPlansIncludesFreePlanAndNormalizesOneTimeRule(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{
+		{ID: "free_1m", Enabled: true, Months: 1, PriceRub: 0, FreeOneTime: true, TrafficGB: 100, DeviceLimit: 2},
+		{ID: "paid_1m", Enabled: true, Months: 1, PriceRub: 100, FreeOneTime: true, TrafficGB: 100, DeviceLimit: 2},
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Plans[1].FreeOneTime {
+		t.Fatal("paid plan must not keep the free one-time rule")
+	}
+
+	service := &Service{}
+	service.value.Store(settings)
+	plans := service.CheckoutPlans()
+	if len(plans) != 2 {
+		t.Fatalf("checkout plans length = %d, want 2", len(plans))
+	}
+	if plans[0].PriceRub != 0 || plans[0].PriceStars != 0 || !plans[0].FreeOneTime {
+		t.Fatalf("free checkout plan mismatch: %+v", plans[0])
+	}
+}
+
+func TestCheckoutPlansPreservesExplicitEmptySquadSelection(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Plans = []PlanSettings{
+		{ID: "no_squads", Enabled: true, Months: 1, InternalSquadsConfigured: true},
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	service := &Service{}
+	service.value.Store(settings)
+	plans := service.CheckoutPlans()
+	if len(plans) != 1 || !plans[0].InternalSquadsConfigured || len(plans[0].InternalSquadUUIDs) != 0 {
+		t.Fatalf("explicit empty squad selection was not preserved: %+v", plans)
+	}
+}
+
+func TestNormalizeAndValidateUsesNavigationDimensions(t *testing.T) {
+	settings := DefaultSettings()
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "navigation" && item.ID == "dashboard" {
+			item.Width = 60
+			item.Height = 50
+		}
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "navigation" && item.ID == "dashboard" {
+			if item.Width != 60 || item.Height != 50 {
+				t.Fatalf("navigation dimensions changed: width=%g height=%d", item.Width, item.Height)
+			}
+			return
+		}
+	}
+	t.Fatal("dashboard navigation element not found")
+}
+
+func TestNormalizeAndValidateAcceptsCamelCaseContentKeys(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.Copy["ru"][" promoExpiresAt "] = " Valid until RU "
+	settings.Content.Copy["ru"]["resumePaymentTitle"] = "Payment incomplete RU"
+	settings.Content.Copy["en"] = map[string]string{}
+	settings.Content.Copy["en"]["promoExpiresAt"] = "Valid until"
+	settings.Content.Copy["en"]["resumePaymentTitle"] = "Payment not completed"
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if _, exists := settings.Content.Copy["ru"][" promoExpiresAt "]; exists {
+		t.Fatal("content key whitespace was not normalized")
+	}
+	if got := settings.Content.Copy["ru"]["promoExpiresAt"]; got != "Valid until RU" {
+		t.Fatalf("normalized promoExpiresAt = %q", got)
+	}
+	if _, exists := settings.Content.Copy["en"]; exists {
+		t.Fatal("english content settings were not removed")
+	}
+}
+
+func TestNormalizeAndValidateRejectsUnsafeContentKey(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.Copy["ru"]["<script>"] = "bad"
+
+	err := NormalizeAndValidate(&settings)
+	if err == nil || !strings.Contains(err.Error(), "invalid content key") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want invalid content key", err)
+	}
+}
+
+func TestParseTelegramChannelChatID(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want any
+		ok   bool
+	}{
+		{name: "public url", raw: "https://t.me/link_bot_news", want: "@link_bot_news", ok: true},
+		{name: "public username", raw: "@link_bot_news", want: "@link_bot_news", ok: true},
+		{name: "private numeric", raw: "-1001234567890", want: int64(-1001234567890), ok: true},
+		{name: "empty", raw: "", ok: false},
+		{name: "invite url requires numeric id", raw: "https://t.me/+invite", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ParseTelegramChannelChatID(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("ParseTelegramChannelChatID(%q) ok = %v, want %v", tt.raw, ok, tt.ok)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("ParseTelegramChannelChatID(%q) = %#v, want %#v", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAndValidateSupportAndVerificationContent(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.Links["channel"] = "https://t.me/link_bot_news"
+	settings.Content.Verification.ChannelChatID = "-1001234567890"
+	settings.Content.Support.NewTicketText = "Ticket {ticket_id}: {message}"
+	settings.Content.Support.OpenButton.Text = "Open support"
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.Content.Verification.ChannelChatID; got != "-1001234567890" {
+		t.Fatalf("channel chat id = %q", got)
+	}
+	if got := settings.Content.Support.NewTicketText; got != "Ticket {ticket_id}: {message}" {
+		t.Fatalf("support template = %q", got)
+	}
+	if got := settings.Content.Support.OpenButton.Text; got != "Open support" {
+		t.Fatalf("support button = %q", got)
+	}
+}
+
+func TestNormalizeAndValidateAllowsDisablingChannelVerification(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = CurrentVersion
+	settings.Content.Links["channel"] = ""
+	settings.Content.Verification.ChannelChatID = ""
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.Content.Links["channel"]; got != "" {
+		t.Fatalf("disabled channel link = %q, want empty", got)
+	}
+}
+
+func TestNormalizeAndValidateAddsVisualEditorAreas(t *testing.T) {
+	settings := DefaultSettings()
+	positionX, positionY := 31.5, 72.25
+	settings.Layout.Elements = []LayoutElement{
+		{ID: "payments", Area: "profile", Order: 2, Visible: true, Width: 72, Height: 66, Framed: true, Align: "right", OffsetX: 12, OffsetY: -8, PositionX: &positionX, PositionY: &positionY},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	required := map[string]bool{
+		"dashboard:logo":                false,
+		"dashboard:traffic":             false,
+		"dashboard:promo_widget":        false,
+		"dashboard:notification_widget": false,
+		"buy:plans":                     false,
+		"buy:plan_6m":                   false,
+		"buy:pay_button":                false,
+		"support:tickets":               false,
+		"support:new_ticket":            false,
+		"profile:payments":              false,
+		"profile:group_purchases":       false,
+		"navigation:buy":                false,
+	}
+	for _, item := range settings.Layout.Elements {
+		key := item.Area + ":" + item.ID
+		if _, ok := required[key]; ok {
+			required[key] = true
+		}
+		if key == "profile:payments" {
+			if item.Width != 72 || item.Height != 66 || item.Align != "right" || item.OffsetX != 12 || item.OffsetY != -8 || item.PositionX == nil || item.PositionY == nil || *item.PositionX != positionX || *item.PositionY != positionY {
+				t.Fatalf("existing layout was changed: %+v", item)
+			}
+		}
+	}
+	for key, found := range required {
+		if !found {
+			t.Fatalf("missing default visual editor element %s", key)
+		}
+	}
+}
+
+func TestNormalizeAndValidatePromoWidgetCode(t *testing.T) {
+	settings := DefaultSettings()
+	found := false
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "dashboard" && item.ID == "promo_widget" {
+			item.Visible = true
+			item.PromoCode = " gift_20 "
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("default promo widget layout element is missing")
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "promo_widget" && item.PromoCode != "GIFT_20" {
+			t.Fatalf("normalized promo widget code = %q, want GIFT_20", item.PromoCode)
+		}
+	}
+
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "dashboard" && item.ID == "promo_widget" {
+			item.PromoCode = "bad code!"
+			break
+		}
+	}
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "invalid promo code") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want invalid promo code", err)
+	}
+}
+
+func TestNormalizeAndValidatePromoWidgetIconBubble(t *testing.T) {
+	settings := DefaultSettings()
+	found := false
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area != "dashboard" || item.ID != "promo_widget" {
+			continue
+		}
+		found = true
+		if item.IconBubble == nil || !*item.IconBubble {
+			t.Fatal("default promo widget icon bubble must be enabled")
+		}
+		disabled := false
+		item.IconBubble = &disabled
+	}
+	if !found {
+		t.Fatal("default promo widget layout element is missing")
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "promo_widget" && (item.IconBubble == nil || *item.IconBubble) {
+			t.Fatal("disabled promo widget icon bubble was not preserved")
+		}
+	}
+
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "dashboard" && item.ID == "promo_widget" {
+			item.IconBubble = nil
+		}
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() legacy settings error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "promo_widget" && (item.IconBubble == nil || !*item.IconBubble) {
+			t.Fatal("legacy promo widget did not receive the default icon bubble")
+		}
+	}
+}
+
+func TestNormalizeAndValidateNotificationWidget(t *testing.T) {
+	settings := DefaultSettings()
+	found := false
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area != "dashboard" || item.ID != "notification_widget" {
+			continue
+		}
+		found = true
+		if item.Visible {
+			t.Fatal("default notification widget must be hidden")
+		}
+		if item.IconBubble == nil || !*item.IconBubble {
+			t.Fatal("default notification widget icon bubble must be enabled")
+		}
+		disabled := false
+		item.IconBubble = &disabled
+		item.NotificationText = "  Важная новость  "
+		item.Visible = true
+	}
+	if !found {
+		t.Fatal("default notification widget layout element is missing")
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "notification_widget" {
+			if item.NotificationText != "Важная новость" || item.IconBubble == nil || *item.IconBubble {
+				t.Fatalf("unexpected normalized notification widget: %+v", item)
+			}
+		}
+	}
+
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "dashboard" && item.ID == "notification_widget" {
+			item.IconBubble = nil
+			item.NotificationText = strings.Repeat("я", 2001)
+		}
+	}
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "notification text is too long") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want notification text length error", err)
+	}
+
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "dashboard" && item.ID == "notification_widget" {
+			item.NotificationText = "Legacy text"
+		}
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() legacy settings error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "notification_widget" && (item.IconBubble == nil || !*item.IconBubble) {
+			t.Fatal("legacy notification widget did not receive the default icon bubble")
+		}
+	}
+}
+
+func TestNormalizeAndValidateDashboardLayoutStylesAndEmptyCards(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = CurrentVersion
+	settings.Layout.Elements = append(settings.Layout.Elements, LayoutElement{
+		ID: "empty_card_1", Area: "dashboard", Order: 30, Visible: true,
+		Width: 86, Height: 120, Align: "center", CornerRadius: 18,
+		TextScale: 125, TextOffsetX: 12, TextOffsetY: -8, Layer: -4,
+	})
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	foundPrimary := false
+	foundEmpty := false
+	for _, item := range settings.Layout.Elements {
+		switch item.Area + ":" + item.ID {
+		case "dashboard:primary_action":
+			foundPrimary = true
+			if item.CornerRadius != 22 || item.TextScale != 100 {
+				t.Fatalf("unexpected primary action style: %+v", item)
+			}
+		case "dashboard:empty_card_1":
+			foundEmpty = true
+			if item.CornerRadius != 18 || item.TextScale != 125 || item.TextOffsetX != 12 || item.TextOffsetY != -8 || item.Layer != -4 {
+				t.Fatalf("empty card style was changed: %+v", item)
+			}
+		}
+	}
+	if !foundPrimary || !foundEmpty {
+		t.Fatalf("missing styled dashboard elements: primary=%v empty=%v", foundPrimary, foundEmpty)
+	}
+}
+
+func TestNormalizeAndValidateMigratesDashboardLayoutStyles(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 20
+	for index := range settings.Layout.Elements {
+		if settings.Layout.Elements[index].Area == "dashboard" {
+			settings.Layout.Elements[index].CornerRadius = 0
+			settings.Layout.Elements[index].TextScale = 0
+		}
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "primary_action" {
+			if item.CornerRadius != 22 || item.TextScale != 100 {
+				t.Fatalf("legacy primary action style was not migrated: %+v", item)
+			}
+			return
+		}
+	}
+	t.Fatal("primary action is missing")
+}
+
+func TestNormalizeAndValidatePreservesVersion21LayoutAndAddsSubscriptionSwitcher(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 21
+	settings.Layout.Elements = filterLayoutElement(settings.Layout.Elements, "dashboard", "subscription_switcher")
+	for index := range settings.Layout.Elements {
+		if settings.Layout.Elements[index].Area == "dashboard" && settings.Layout.Elements[index].ID == "primary_action" {
+			settings.Layout.Elements[index].Width = 73
+			settings.Layout.Elements[index].CornerRadius = 7
+		}
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if !hasLayoutElement(settings.Layout.Elements, "dashboard", "subscription_switcher") {
+		t.Fatal("subscription switcher was not added during migration")
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "primary_action" && (item.Width != 73 || item.CornerRadius != 7) {
+			t.Fatalf("version 21 layout was overwritten: %+v", item)
+		}
+	}
+}
+
+func TestNormalizeAndValidateSubPageCustomClients(t *testing.T) {
+	settings := DefaultSettings()
+	settings.SubPage = SubPageSettings{
+		IncludeBuiltIns: false,
+		Clients: []SubPageClientSettings{{
+			ID: " Custom_Client ", Name: " My Client ", Scheme: "myclient://add/", InstallURL: "https://example.com/download",
+			Enabled: true, Featured: true, AllPlatforms: false, Platforms: []string{"windows", "android", "windows", "unsupported"},
+		}},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	client := settings.SubPage.Clients[0]
+	if client.ID != "custom_client" || client.Name != "My Client" || client.InstallLabelRU != "Скачать My Client" {
+		t.Fatalf("unexpected normalized Sub page client: %+v", client)
+	}
+	if len(client.Platforms) != 2 || client.Platforms[0] != "windows" || client.Platforms[1] != "android" {
+		t.Fatalf("unexpected Sub page platforms: %#v", client.Platforms)
+	}
+}
+
+func TestNormalizeAndValidateSubPagePriorities(t *testing.T) {
+	settings := DefaultSettings()
+	settings.SubPage.PriorityBuiltIns = []string{" INCY ", "happ", "incy", "unknown"}
+	settings.SubPage.Clients = []SubPageClientSettings{
+		{ID: "first", Name: "First", Scheme: "first://add/", Enabled: true, Featured: true, AllPlatforms: true},
+		{ID: "second", Name: "Second", Scheme: "second://add/", Enabled: true, Featured: true, AllPlatforms: true},
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.SubPage.PriorityBuiltIns; len(got) != 2 || got[0] != "incy" || got[1] != "happ" {
+		t.Fatalf("priority built-ins = %#v", got)
+	}
+	if !settings.SubPage.Clients[0].Featured || !settings.SubPage.Clients[1].Featured {
+		t.Fatal("multiple priority clients must remain starred")
+	}
+}
+
+func TestNormalizeAndValidateRejectsSubPageWithoutUsableClient(t *testing.T) {
+	settings := DefaultSettings()
+	settings.SubPage = SubPageSettings{IncludeBuiltIns: false, Clients: []SubPageClientSettings{{ID: "custom", Name: "Custom", Scheme: "https://example.com/", Enabled: true, AllPlatforms: true}}}
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "invalid scheme") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want invalid scheme", err)
+	}
+}
+
+func TestNormalizeAndValidatePreservesVersion20AppearanceAndReferrals(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 20
+	settings.Appearance.BackgroundMotion["liquid1"] = BackgroundMotionSettings{Dimming: 63, Speed: 27}
+	settings.Appearance.Liquid["liquid1"] = LiquidBackgroundSettings{Colors: append([]string(nil), settings.Appearance.Liquid["liquid1"].Colors...), Dimming: 11, Speed: 88}
+	settings.Referrals.Trial = ReferralRewardSettings{BalanceMode: "fixed", BalanceRub: 321}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.Appearance.BackgroundMotion["liquid1"]; got.Dimming != 63 || got.Speed != 27 {
+		t.Fatalf("version 20 background motion was overwritten: %+v", got)
+	}
+	if got := settings.Referrals.Trial; got.BalanceMode != "fixed" || got.BalanceRub != 321 {
+		t.Fatalf("version 20 referral settings were overwritten: %+v", got)
+	}
+}
+
+func TestLayoutElementJSONKeepsZeroRadiusAndLayer(t *testing.T) {
+	payload, err := json.Marshal(LayoutElement{ID: "primary_action", Area: "dashboard", CornerRadius: 0, Layer: 0})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	text := string(payload)
+	if !strings.Contains(text, `"cornerRadius":0`) || !strings.Contains(text, `"layer":0`) {
+		t.Fatalf("zero style values must survive JSON round trip: %s", text)
+	}
+}
+
+func TestNormalizeAndValidateRemovesDashboardWrappers(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Layout.Elements = append(settings.Layout.Elements,
+		LayoutElement{ID: "brand", Area: "dashboard", Visible: true},
+		LayoutElement{ID: "subscription", Area: "dashboard", Visible: true},
+		LayoutElement{ID: "actions", Area: "dashboard", Visible: true},
+	)
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && contains([]string{"brand", "subscription", "actions"}, item.ID) {
+			t.Fatalf("legacy dashboard wrapper remains: %+v", item)
+		}
+	}
+}
+
+func TestNormalizeAndValidateGridAppearanceAndAdminContact(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Appearance.BackgroundMode = "grid"
+	settings.Content.AdminContact = "https://t.me/link_bot_admin"
+	settings.Features["yookassa"] = true
+	settings.Features["crypto"] = true
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Content.AdminContact != "@link_bot_admin" {
+		t.Fatalf("admin contact = %q", settings.Content.AdminContact)
+	}
+	for _, key := range []string{"yookassa", "crypto"} {
+		if _, exists := settings.Features[key]; exists {
+			t.Fatalf("legacy integration feature %q was not removed", key)
+		}
+	}
+	for _, key := range []string{"gridBackground", "gridLine", "gridGlowLeft", "gridGlowRight", "grid2Background", "grid2Line", "grid2Glow", "morphicBackground", "morphicBall", "twinkleBackground", "twinkleStar", "waveBackground", "waveDot"} {
+		if settings.Appearance.Colors[key] == "" {
+			t.Fatalf("grid color %q is empty", key)
+		}
+	}
+}
+
+func TestNormalizeAndValidateGrid2Appearance(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Appearance.BackgroundMode = "grid2"
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Appearance.BackgroundMode != "grid2" {
+		t.Fatalf("background mode = %q, want grid2", settings.Appearance.BackgroundMode)
+	}
+	for _, key := range []string{"grid2Background", "grid2Line", "grid2Glow"} {
+		if settings.Appearance.Colors[key] == "" {
+			t.Fatalf("grid2 color %q is empty", key)
+		}
+	}
+}
+
+func TestGlassAppearanceSurvivesSettingsRoundTrip(t *testing.T) {
+	settings := DefaultSettings()
+	if settings.Appearance.Glass {
+		t.Fatal("glass must be disabled by default")
+	}
+	settings.Appearance.Glass = true
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var restored Settings
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !restored.Appearance.Glass {
+		t.Fatal("glass setting was lost after JSON round trip")
+	}
+}
+
+func TestNormalizeAndValidateMorphicBackgroundAppearance(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Appearance.BackgroundMode = "morphic"
+	delete(settings.Appearance.Colors, "morphicBackground")
+	delete(settings.Appearance.Colors, "morphicBall")
+	delete(settings.Appearance.BackgroundMotion, "morphic")
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Appearance.BackgroundMode != "morphic" {
+		t.Fatalf("background mode = %q, want morphic", settings.Appearance.BackgroundMode)
+	}
+	if got := settings.Appearance.Colors["morphicBackground"]; got != "#000000" {
+		t.Fatalf("morphic background = %q, want #000000", got)
+	}
+	if got := settings.Appearance.Colors["morphicBall"]; got != "#ff69b4" {
+		t.Fatalf("morphic ball = %q, want #ff69b4", got)
+	}
+	if got := settings.Appearance.BackgroundMotion["morphic"]; got.Dimming != 0 || got.Speed != 42 {
+		t.Fatalf("morphic motion = %+v, want dimming 0 speed 42", got)
+	}
+}
+
+func TestNormalizeAndValidateTwinkleBackgroundAppearance(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Appearance.BackgroundMode = "twinkle"
+	delete(settings.Appearance.Colors, "twinkleBackground")
+	delete(settings.Appearance.Colors, "twinkleStar")
+	delete(settings.Appearance.BackgroundMotion, "twinkle")
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Appearance.BackgroundMode != "twinkle" {
+		t.Fatalf("background mode = %q, want twinkle", settings.Appearance.BackgroundMode)
+	}
+	if got := settings.Appearance.Colors["twinkleBackground"]; got != "#000000" {
+		t.Fatalf("twinkle background = %q, want #000000", got)
+	}
+	if got := settings.Appearance.Colors["twinkleStar"]; got != "#ffffff" {
+		t.Fatalf("twinkle star = %q, want #ffffff", got)
+	}
+	if got := settings.Appearance.BackgroundMotion["twinkle"]; got.Dimming != 0 || got.Speed != 38 {
+		t.Fatalf("twinkle motion = %+v, want dimming 0 speed 38", got)
+	}
+}
+
+func TestBackTyanVideoBackgroundSurvivesSettingsRoundTrip(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Appearance.BackgroundMode = "backtyan"
+	delete(settings.Appearance.BackgroundMotion, "backtyan")
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.Appearance.BackgroundMotion["backtyan"]; got.Dimming != 65 || got.Speed != 50 {
+		t.Fatalf("video background motion = %+v, want dimming 65 speed 50", got)
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Settings
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Appearance.BackgroundMode != "backtyan" {
+		t.Fatalf("video background was lost after JSON round trip: %q", restored.Appearance.BackgroundMode)
+	}
+}
+
+func TestRetiredBackgroundsFallBackWithoutResettingAppearance(t *testing.T) {
+	for _, mode := range []string{"liquid1", "liquid2"} {
+		t.Run(mode, func(t *testing.T) {
+			settings := DefaultSettings()
+			settings.Appearance.BackgroundMode = mode
+			settings.Appearance.Colors["accent"] = "#123456"
+			settings.Appearance.Glass = true
+			settings.Appearance.ShowFrames = false
+			if err := NormalizeAndValidate(&settings); err != nil {
+				t.Fatalf("NormalizeAndValidate() error = %v", err)
+			}
+			if settings.Appearance.BackgroundMode != "animated" {
+				t.Fatalf("retired background = %q, want animated", settings.Appearance.BackgroundMode)
+			}
+			if settings.Appearance.Colors["accent"] != "#123456" || !settings.Appearance.Glass || settings.Appearance.ShowFrames {
+				t.Fatal("unrelated appearance settings were reset")
+			}
+		})
+	}
+}
+
+func TestNormalizeAndValidateLiquidBackgroundAppearance(t *testing.T) {
+	settings := DefaultSettings()
+	defaults := DefaultSettings()
+	settings.Appearance.BackgroundMode = "liquid1"
+	settings.Appearance.Liquid = nil
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, mode := range []string{"liquid1", "liquid2"} {
+		background, ok := settings.Appearance.Liquid[mode]
+		if !ok {
+			t.Fatalf("liquid background %q is missing", mode)
+		}
+		if len(background.Colors) != 4 {
+			t.Fatalf("liquid background %q colors = %d, want 4", mode, len(background.Colors))
+		}
+		for index, color := range defaults.Appearance.Liquid[mode].Colors {
+			if background.Colors[index] != color {
+				t.Fatalf("liquid background %q color %d = %q, want %q", mode, index, background.Colors[index], color)
+			}
+		}
+		if background.Speed < 10 || background.Speed > 100 {
+			t.Fatalf("liquid background %q speed = %d", mode, background.Speed)
+		}
+	}
+	for _, mode := range []string{"animated", "grid", "grid2", "morphic", "twinkle", "liquid1", "liquid2", "solid"} {
+		motion, ok := settings.Appearance.BackgroundMotion[mode]
+		if !ok {
+			t.Fatalf("background motion %q is missing", mode)
+		}
+		if motion.Dimming < 0 || motion.Dimming > 80 || motion.Speed < 10 || motion.Speed > 100 {
+			t.Fatalf("background motion %q is invalid: %+v", mode, motion)
+		}
+	}
+
+	custom := settings.Appearance.Liquid["liquid2"]
+	custom.Colors = []string{"#010101", "#123456", "#abcdef", "#fefefe"}
+	custom.Dimming = 0
+	custom.Speed = 100
+	settings.Appearance.Liquid["liquid2"] = custom
+	settings.Appearance.BackgroundMode = "liquid2"
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate(custom) error = %v", err)
+	}
+	if got := settings.Appearance.Liquid["liquid2"]; got.Dimming != 0 || got.Speed != 100 || got.Colors[2] != "#abcdef" {
+		t.Fatalf("custom liquid background was not preserved: %+v", got)
+	}
+}
+
+func TestNormalizeAndValidateRefreshesOldLiquidDefaults(t *testing.T) {
+	settings := DefaultSettings()
+	for mode, oldDimming := range map[string]int{"liquid1": 26, "liquid2": 38} {
+		old := settings.Appearance.Liquid[mode]
+		old.Colors = []string{"#000000", "#1646ff", "#7226ff", "#ffffff"}
+		old.Dimming = oldDimming
+		settings.Appearance.Liquid[mode] = old
+		settings.Appearance.BackgroundMotion[mode] = BackgroundMotionSettings{Dimming: oldDimming, Speed: old.Speed}
+	}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	defaults := DefaultSettings()
+	for _, mode := range []string{"liquid1", "liquid2"} {
+		got := settings.Appearance.Liquid[mode]
+		want := defaults.Appearance.Liquid[mode]
+		for index, color := range want.Colors {
+			if got.Colors[index] != color {
+				t.Fatalf("%s color %d = %s, want %s", mode, index, got.Colors[index], color)
+			}
+		}
+		if settings.Appearance.BackgroundMotion[mode].Dimming != defaults.Appearance.BackgroundMotion[mode].Dimming {
+			t.Fatalf("%s dimming was not upgraded", mode)
+		}
+	}
+}
+
+func TestNormalizeAndValidateMigratesLiquidMotion(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = 19
+	settings.Appearance.BackgroundMotion = nil
+	legacy := settings.Appearance.Liquid["liquid1"]
+	legacy.Dimming = 52
+	legacy.Speed = 78
+	settings.Appearance.Liquid["liquid1"] = legacy
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.Appearance.BackgroundMotion["liquid1"]; got.Dimming != 52 || got.Speed != 78 {
+		t.Fatalf("migrated liquid motion = %+v, want dimming 52 speed 78", got)
+	}
+}
+
+func TestNormalizeAndValidateRejectsInvalidBackgroundDimming(t *testing.T) {
+	settings := DefaultSettings()
+	motion := settings.Appearance.BackgroundMotion["grid"]
+	motion.Dimming = 81
+	settings.Appearance.BackgroundMotion["grid"] = motion
+
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("NormalizeAndValidate() accepted invalid background dimming")
+	}
+}
+
+func TestNormalizeAndValidateRejectsInvalidLiquidBackgroundDimming(t *testing.T) {
+	settings := DefaultSettings()
+	background := settings.Appearance.Liquid["liquid1"]
+	background.Dimming = 81
+	settings.Appearance.Liquid["liquid1"] = background
+
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("NormalizeAndValidate() accepted invalid liquid background dimming")
+	}
+}
+
+func TestNormalizeAndValidateKeepsFreeEditorGeometry(t *testing.T) {
+	settings := DefaultSettings()
+	positionX, positionY := 1870.5, -2910.25
+	for index := range settings.Layout.Elements {
+		item := &settings.Layout.Elements[index]
+		if item.Area == "dashboard" && item.ID == "traffic" {
+			item.Width = 142
+			item.Height = 680
+			item.OffsetX = 870
+			item.OffsetY = -910
+			item.PositionX = &positionX
+			item.PositionY = &positionY
+		}
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Version != CurrentVersion {
+		t.Fatalf("version = %d, want %d", settings.Version, CurrentVersion)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.Area == "dashboard" && item.ID == "traffic" {
+			if item.Width != 142 || item.Height != 680 || item.OffsetX != 870 || item.OffsetY != -910 || item.PositionX == nil || item.PositionY == nil || *item.PositionX != positionX || *item.PositionY != -2000 {
+				t.Fatalf("free editor geometry changed: %+v", item)
+			}
+			return
+		}
+	}
+	t.Fatal("dashboard traffic element not found")
+}
+
+func TestNormalizeAndValidateRemovesLegacyExternalLinks(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.Links["status"] = "https://example.com/status"
+	settings.Content.Links["feedback"] = "https://example.com/reviews"
+	settings.Content.Links["tos"] = "https://example.com/terms"
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	for _, key := range []string{"status", "feedback", "tos"} {
+		if _, ok := settings.Content.Links[key]; ok {
+			t.Fatalf("legacy link %q was not removed", key)
+		}
+	}
+	for _, key := range []string{"support", "channel"} {
+		if _, ok := settings.Content.Links[key]; !ok {
+			t.Fatalf("active link %q is missing", key)
+		}
+	}
+}
+
+func TestNormalizeAndValidateAddsUnlimitedBadgeColor(t *testing.T) {
+	settings := DefaultSettings()
+	delete(settings.Appearance.Colors, "unlimitedBadge")
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	if got := settings.Appearance.Colors["unlimitedBadge"]; got != "#949494" {
+		t.Fatalf("unlimitedBadge = %q, want #949494", got)
+	}
+}
+
+func TestNormalizeAndValidateAddsProfileFeatureFlags(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = CurrentVersion - 1
+	settings.Features["reviews"] = false
+	for _, name := range []string{"additional_subscriptions", "payments_history", "news", "login_methods", "terms", "privacy", "promo_code", "partner", "faq"} {
+		delete(settings.Features, name)
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+
+	for _, name := range []string{"additional_subscriptions", "payments_history", "news", "login_methods", "terms", "privacy", "promo_code", "partner", "faq"} {
+		if !settings.Features[name] {
+			t.Fatalf("migrated feature %q is disabled", name)
+		}
+	}
+	if settings.Features["reviews"] {
+		t.Fatal("existing disabled feature was enabled during migration")
+	}
+}
+
+func TestEmailAuthFeatureDefaultsAndStaysDisabled(t *testing.T) {
+	settings := DefaultSettings()
+	if !settings.Features["email_auth"] {
+		t.Fatal("email authentication should be enabled by default")
+	}
+	settings.Features["email_auth"] = false
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.Features["email_auth"] {
+		t.Fatal("normalization re-enabled email authentication")
+	}
+}
+
+func TestProfileFeatureFlagsRemainDisabledAfterSettingsRoundTrip(t *testing.T) {
+	settings := DefaultSettings()
+	for _, name := range []string{"promo_code", "partner", "faq"} {
+		settings.Features[name] = false
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	reloaded := DefaultSettings()
+	if err := json.Unmarshal(raw, &reloaded); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if err := NormalizeAndValidate(&reloaded); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	for _, name := range []string{"promo_code", "partner", "faq"} {
+		if enabled, exists := reloaded.Features[name]; !exists || enabled {
+			t.Fatalf("disabled feature %q was not preserved: enabled=%v, exists=%v", name, enabled, exists)
+		}
+	}
+	if !reloaded.Features["promocodes"] {
+		t.Fatal("hiding the profile promo button disabled purchase discounts")
+	}
+}
+
+func TestNormalizeAndValidateReminderButtonAndRussianOnlyFAQ(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.SubscriptionReminderButton = TelegramButtonSettings{
+		IconCustomEmojiID: `<tg-emoji emoji-id="5206222720416643915">emoji</tg-emoji>`,
+		Style:             " SUCCESS ",
+	}
+	settings.Content.FAQ["ru"] = []FAQItem{{Question: " Question ", Answer: " Answer "}}
+	settings.Content.FAQ["en"] = []FAQItem{{Question: "English", Answer: "Removed"}}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if got := settings.Content.SubscriptionReminderButton.IconCustomEmojiID; got != "5206222720416643915" {
+		t.Fatalf("iconCustomEmojiId = %q", got)
+	}
+	if got := settings.Content.SubscriptionReminderButton.Style; got != "success" {
+		t.Fatalf("style = %q", got)
+	}
+	if _, exists := settings.Content.FAQ["en"]; exists {
+		t.Fatal("english FAQ settings were not removed")
+	}
+	if got := settings.Content.FAQ["ru"]; len(got) != 1 || got[0].Question != "Question" || got[0].Answer != "Answer" {
+		t.Fatalf("russian FAQ was not normalized: %#v", got)
+	}
+}
+
+func TestNormalizeAndValidateRejectsReminderButtonColor(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.SubscriptionReminderButton.Style = "purple"
+
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "button color") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want button color error", err)
+	}
+}
+
+func TestStartMenuButtonsCanBeRemovedAndValidateTargets(t *testing.T) {
+	settings := DefaultSettings()
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Content.StartMenu.Buttons) < 4 {
+		t.Fatalf("legacy menu was not migrated: %+v", settings.Content.StartMenu.Buttons)
+	}
+	settings.Content.StartMenu.Buttons = []TelegramStartButton{}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Content.StartMenu.Buttons) != 0 {
+		t.Fatal("removed buttons returned")
+	}
+	button := TelegramStartButton{ID: "privacy", Kind: "page", Target: "privacy", Row: 0, Text: "Политика", Style: "primary"}
+	settings.Content.StartMenu.Buttons = []TelegramStartButton{button}
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("valid button rejected: %v", err)
+	}
+	if settings.Content.StartMenu.Buttons[0] != button {
+		t.Fatalf("button changed: %+v", settings.Content.StartMenu.Buttons[0])
+	}
+	for _, test := range []struct{ kind, target string }{{"page", "missing"}, {"url", "javascript:alert(1)"}} {
+		candidate := DefaultSettings()
+		candidate.Content.StartMenu.Buttons = []TelegramStartButton{{ID: "bad", Kind: test.kind, Target: test.target, Text: "Open"}}
+		if err := NormalizeAndValidate(&candidate); err == nil {
+			t.Fatalf("unsafe target accepted: %+v", test)
+		}
+	}
+}
+
+func TestStartSubmenuValidatesTextAndChildActions(t *testing.T) {
+	newSettings := func() Settings {
+		settings := DefaultSettings()
+		settings.Content.StartMenu.Buttons = []TelegramStartButton{{
+			ID: "subscription", Kind: "submenu", Text: "Подписка", Submenu: &TelegramSubMenuSettings{
+				Text:    "<b>{subscription_name}</b>\n{traffic} · {devices}",
+				Buttons: []TelegramStartButton{{ID: "profile", Kind: "page", Target: "settings", Text: "Профиль"}},
+			},
+		}}
+		return settings
+	}
+	settings := newSettings()
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("valid submenu rejected: %v", err)
+	}
+	settings = newSettings()
+	settings.Content.StartMenu.Buttons[0].Submenu.Text = ""
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("submenu without text accepted")
+	}
+	settings = newSettings()
+	settings.Content.StartMenu.Buttons[0].Submenu.Buttons[0].Target = "javascript:alert(1)"
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("unsafe submenu action accepted")
+	}
+}
+
+func TestLegalDocumentDateChangesOnlyWithDocument(t *testing.T) {
+	current := DefaultSettings()
+	current.Content.LegalDocuments["privacy"] = LegalDocumentSettings{Title: "Политика", Intro: "Текст"}
+	if err := NormalizeAndValidate(&current); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	second := first.Add(24 * time.Hour)
+	next := cloneSettings(current)
+	stampLegalDocumentChanges(&next, current, first)
+	if got := next.Content.LegalDocuments["privacy"].ModifiedAt; got != "" {
+		t.Fatalf("unchanged document received a new date: %q", got)
+	}
+	next.Content.LegalDocuments["privacy"] = LegalDocumentSettings{Title: "Политика", Intro: "Новый текст"}
+	stampLegalDocumentChanges(&next, current, first)
+	if got := next.Content.LegalDocuments["privacy"].ModifiedAt; got != first.Format(time.RFC3339) {
+		t.Fatalf("changed document date = %q", got)
+	}
+	current = cloneSettings(next)
+	next = cloneSettings(current)
+	next.Content.BrandName = "Другой бренд"
+	stampLegalDocumentChanges(&next, current, second)
+	if got := next.Content.LegalDocuments["privacy"].ModifiedAt; got != first.Format(time.RFC3339) {
+		t.Fatalf("unrelated setting changed document date: %q", got)
+	}
+}
+
+func TestInlineGiftPreviewBannerValidation(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.Gift.Inline.PreviewBannerURL = "/mini-app/uploads/logo-0123456789abcdef.jpg"
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("uploaded inline preview rejected: %v", err)
+	}
+	settings.Content.Gift.Inline.PreviewBannerURL = "javascript:alert(1)"
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("unsafe inline preview accepted")
+	}
+}
+
+func TestNormalizeAndValidateMigratesTelegramContentOnce(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = CurrentVersion - 1
+	settings.Content.Verification = TelegramVerificationSettings{}
+	settings.Content.StartMenu = TelegramStartMenuSettings{}
+	settings.Content.Commerce = TelegramCommerceSettings{}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Content.StartImage != "" || settings.Content.Verification.Banner != "" || settings.Content.Commerce.Banner != "" || settings.Content.Commerce.SuccessBanner != "" {
+		t.Fatalf("legacy content restored built-in banners: menu=%q verification=%q commerce=%q success=%q", settings.Content.StartImage, settings.Content.Verification.Banner, settings.Content.Commerce.Banner, settings.Content.Commerce.SuccessBanner)
+	}
+	if settings.Content.StartMenu.PlansButton.Text == "" || settings.Content.Commerce.PayButton.Text == "" {
+		t.Fatal("legacy Telegram buttons were not migrated")
+	}
+}
+
+func TestNormalizeAndValidateMigratesProfileEditorSettings(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Version = CurrentVersion - 1
+	settings.Layout.Elements = filterLayoutElement(settings.Layout.Elements, "profile", "privacy")
+	settings.Content.ProfileButtons = nil
+	settings.Content.LegalDocuments = nil
+	settings.Content.CustomLinks = []CustomLink{
+		{
+			ID:      "legacy_link",
+			LabelRU: "Legacy",
+			HintRU:  "Existing profile link",
+			URL:     "https://example.com/legacy",
+			Icon:    "external",
+		},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Version != CurrentVersion {
+		t.Fatalf("version = %d, want %d", settings.Version, CurrentVersion)
+	}
+	if settings.Content.ProfileButtons == nil || settings.Content.LegalDocuments == nil {
+		t.Fatal("profile editor maps were not initialized")
+	}
+	if got := settings.Content.CustomLinks[0].Type; got != "url" {
+		t.Fatalf("legacy custom link type = %q, want url", got)
+	}
+	if !hasLayoutElement(settings.Layout.Elements, "profile", "privacy") {
+		t.Fatal("privacy profile item was not added during migration")
+	}
+	if !hasLayoutElement(settings.Layout.Elements, "profile", "custom.legacy_link") {
+		t.Fatal("legacy custom profile button was not added to the layout")
+	}
+}
+
+func TestDefaultSettingsUseCompactProfileRows(t *testing.T) {
+	settings := DefaultSettings()
+	for _, element := range settings.Layout.Elements {
+		if element.Area == "profile" && element.ID == "server_status" {
+			if element.Height != 48 {
+				t.Fatalf("profile row height = %d, want 48", element.Height)
+			}
+			return
+		}
+	}
+	t.Fatal("default server status profile row was not found")
+}
+
+func TestNormalizeAndValidateProfileButtonAndLegalPage(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.ProfileButtons["web_version"] = ProfileButtonSettings{
+		LabelRU: " Web ",
+		HintRU:  " Browser ",
+		URL:     "https://example.com/account",
+	}
+	settings.Content.LegalDocuments["privacy"] = LegalDocumentSettings{
+		Title:          " Privacy ",
+		EffectiveLabel: " Effective ",
+		Jurisdiction:   " Test jurisdiction ",
+		Intro:          " Intro ",
+		Sections: []LegalDocumentSection{
+			{Title: " Data ", Body: " Details "},
+			{},
+		},
+		ContactTitle: " Contact ",
+		Contacts:     " @admin ",
+		Footer:       " Footer ",
+	}
+	settings.Content.CustomLinks = []CustomLink{
+		{
+			ID:      "custom_policy",
+			LabelRU: " Custom policy ",
+			HintRU:  " Details ",
+			Type:    "page",
+			Document: LegalDocumentSettings{
+				Title:    " Custom page ",
+				Sections: []LegalDocumentSection{{Title: " Section ", Body: " Body "}},
+			},
+		},
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	button := settings.Content.ProfileButtons["web_version"]
+	if button.LabelRU != "Web" || button.HintRU != "Browser" || button.URL != "https://example.com/account" {
+		t.Fatalf("profile button was not normalized: %+v", button)
+	}
+	privacy := settings.Content.LegalDocuments["privacy"]
+	if privacy.Title != "Privacy" || privacy.EffectiveLabel != "Effective" || len(privacy.Sections) != 1 || privacy.Sections[0].Body != "Details" {
+		t.Fatalf("privacy document was not normalized: %+v", privacy)
+	}
+	custom := settings.Content.CustomLinks[0]
+	if custom.Type != "page" || custom.URL != "" || custom.Document.Title != "Custom page" {
+		t.Fatalf("custom page was not normalized: %+v", custom)
+	}
+}
+
+func TestNormalizeAndValidateRejectsUnsafeProfileURL(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.ProfileButtons["web_version"] = ProfileButtonSettings{
+		LabelRU: "Web",
+		URL:     "javascript:alert(1)",
+	}
+
+	err := NormalizeAndValidate(&settings)
+	if err == nil || !strings.Contains(err.Error(), "profile button URL") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want profile button URL error", err)
+	}
+}
+
+func TestNormalizeAndValidateRejectsUnknownProfileButton(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.ProfileButtons["unknown"] = ProfileButtonSettings{LabelRU: "Unknown"}
+
+	err := NormalizeAndValidate(&settings)
+	if err == nil || !strings.Contains(err.Error(), "invalid profile button") {
+		t.Fatalf("NormalizeAndValidate() error = %v, want invalid profile button error", err)
+	}
+}
+
+func TestNormalizeAndValidateKeepsOptionalTelegramBannersEmpty(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.StartImage = ""
+	settings.Content.Verification.Banner = ""
+	settings.Content.Commerce.Banner = ""
+	settings.Content.Commerce.SuccessBanner = ""
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Content.StartImage != "" || settings.Content.Verification.Banner != "" || settings.Content.Commerce.Banner != "" || settings.Content.Commerce.SuccessBanner != "" {
+		t.Fatalf("optional banners were restored unexpectedly: menu=%q verification=%q commerce=%q success=%q", settings.Content.StartImage, settings.Content.Verification.Banner, settings.Content.Commerce.Banner, settings.Content.Commerce.SuccessBanner)
+	}
+}
+
+func filterLayoutElement(items []LayoutElement, area, id string) []LayoutElement {
+	result := make([]LayoutElement, 0, len(items))
+	for _, item := range items {
+		if item.Area == area && item.ID == id {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func hasLayoutElement(items []LayoutElement, area, id string) bool {
+	for _, item := range items {
+		if item.Area == area && item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestNormalizeAndValidateDashboardBanner(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Layout.Elements = append(settings.Layout.Elements, LayoutElement{
+		ID: "banner_1", Area: "dashboard", Order: 30, Visible: true,
+		Width: 100, Height: 132, Align: "center", CornerRadius: 16,
+		BannerURL: "/mini-app/uploads/banner-0123456789abcdef.gif", BannerMediaType: "gif",
+		BannerCropX: 0, BannerCropY: 100, BannerZoom: 175,
+		BannerMediaWidth: 1920, BannerMediaHeight: 1080,
+		BannerCropLeft: 12.5, BannerCropTop: 20, BannerCropWidth: 75, BannerCropHeight: 60,
+		BannerAction: "page", BannerTarget: "reviews", BannerAlt: "Отзывы клиентов",
+	})
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("normalize banner: %v", err)
+	}
+
+	var banner *LayoutElement
+	for index := range settings.Layout.Elements {
+		if settings.Layout.Elements[index].ID == "banner_1" {
+			banner = &settings.Layout.Elements[index]
+			break
+		}
+	}
+	if banner == nil || banner.BannerCropX != 0 || banner.BannerCropY != 100 || banner.BannerZoom != 175 || banner.BannerTarget != "reviews" {
+		t.Fatalf("unexpected normalized banner: %+v", banner)
+	}
+	if banner.BannerMediaWidth != 1920 || banner.BannerMediaHeight != 1080 || banner.BannerCropLeft != 12.5 || banner.BannerCropTop != 20 || banner.BannerCropWidth != 75 || banner.BannerCropHeight != 60 {
+		t.Fatalf("manual crop was not preserved: %+v", banner)
+	}
+	payload, err := json.Marshal(banner)
+	if err != nil {
+		t.Fatalf("marshal banner: %v", err)
+	}
+	if !strings.Contains(string(payload), `"bannerCropX":0`) {
+		t.Fatalf("zero crop coordinate was omitted: %s", payload)
+	}
+}
+
+func TestNormalizeAndValidateClampsDashboardBannerCropRect(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Layout.Elements = append(settings.Layout.Elements, LayoutElement{
+		ID: "banner_1", Area: "dashboard", Visible: true, Width: 100, Height: 132, Align: "center",
+		BannerURL: "/mini-app/uploads/banner-0123456789abcdef.mp4", BannerMediaType: "mp4",
+		BannerCropX: 50, BannerCropY: 50, BannerZoom: 100,
+		BannerMediaWidth: 3840, BannerMediaHeight: 2160,
+		BannerCropLeft: 90, BannerCropTop: -10, BannerCropWidth: 40, BannerCropHeight: 120,
+		BannerAction: "none",
+	})
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("normalize crop rect: %v", err)
+	}
+	for _, item := range settings.Layout.Elements {
+		if item.ID != "banner_1" {
+			continue
+		}
+		if item.BannerCropLeft != 60 || item.BannerCropTop != 0 || item.BannerCropWidth != 40 || item.BannerCropHeight != 100 {
+			t.Fatalf("clamped crop rect = %+v", item)
+		}
+		return
+	}
+	t.Fatal("banner was not preserved")
+}
+
+func TestDashboardBannerCropSurvivesLayoutResizeAndJSON(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Layout.Elements = append(settings.Layout.Elements, LayoutElement{
+		ID: "banner_1", Area: "dashboard", Visible: true, Width: 100, Height: 132, Align: "center",
+		BannerURL: "/mini-app/uploads/banner-0123456789abcdef.mp4", BannerMediaType: "mp4", BannerAction: "none",
+		BannerMediaWidth: 1920, BannerMediaHeight: 1080,
+		BannerCropLeft: 12.3456, BannerCropTop: 0, BannerCropWidth: 67.8901, BannerCropHeight: 83.4567,
+	})
+	for _, size := range []struct {
+		width  float64
+		height int
+	}{{35, 90}, {100, 620}, {75.25, 160}} {
+		for i := range settings.Layout.Elements {
+			if settings.Layout.Elements[i].ID == "banner_1" {
+				settings.Layout.Elements[i].Width = size.width
+				settings.Layout.Elements[i].Height = size.height
+			}
+		}
+		payload, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(payload, &settings); err != nil {
+			t.Fatal(err)
+		}
+		if err := NormalizeAndValidate(&settings); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range settings.Layout.Elements {
+			if item.ID == "banner_1" && (item.BannerCropLeft != 12.3456 || item.BannerCropTop != 0 || item.BannerCropWidth != 67.8901 || item.BannerCropHeight != 83.4567) {
+				t.Fatalf("resize changed source crop: %+v", item)
+			}
+		}
+	}
+}
+
+func TestDashboardBannerRejectsIncompleteOrNonFiniteCrop(t *testing.T) {
+	for _, change := range []func(*LayoutElement){
+		func(item *LayoutElement) { item.BannerCropHeight = 0 },
+		func(item *LayoutElement) { item.BannerCropWidth = -1 },
+		func(item *LayoutElement) { item.BannerMediaWidth = 0 },
+		func(item *LayoutElement) { item.BannerMediaWidth = 0; item.BannerMediaHeight = 0 },
+		func(item *LayoutElement) { item.BannerCropLeft = math.NaN() },
+		func(item *LayoutElement) { item.BannerCropTop = math.Inf(1) },
+	} {
+		settings := DefaultSettings()
+		item := LayoutElement{ID: "banner_1", Area: "dashboard", Visible: true, Width: 100, Height: 132, Align: "center",
+			BannerURL: "/mini-app/uploads/banner-0123456789abcdef.png", BannerMediaType: "png", BannerAction: "none",
+			BannerMediaWidth: 1920, BannerMediaHeight: 1080, BannerCropWidth: 60, BannerCropHeight: 80}
+		change(&item)
+		settings.Layout.Elements = append(settings.Layout.Elements, item)
+		if err := NormalizeAndValidate(&settings); err == nil {
+			t.Fatalf("accepted invalid crop: %+v", item)
+		}
+	}
+}
+
+func TestNormalizeAndValidateRejectsUnsafeDashboardBanner(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Layout.Elements = append(settings.Layout.Elements, LayoutElement{
+		ID: "banner_1", Area: "dashboard", Visible: true, Width: 100, Height: 132, Align: "center",
+		BannerURL: "/mini-app/uploads/banner-0123456789abcdef.png", BannerMediaType: "png",
+		BannerCropX: 50, BannerCropY: 50, BannerZoom: 100, BannerAction: "url", BannerTarget: "javascript:alert(1)",
+	})
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "invalid banner link") {
+		t.Fatalf("unsafe banner link error = %v", err)
+	}
+
+	settings = DefaultSettings()
+	settings.Layout.Elements = append(settings.Layout.Elements, LayoutElement{
+		ID: "banner_1", Area: "dashboard", Visible: true, Width: 100, Height: 132, Align: "center",
+		BannerURL: "/mini-app/uploads/../secret.mp4", BannerMediaType: "mp4",
+		BannerCropX: 50, BannerCropY: 50, BannerZoom: 100, BannerAction: "none",
+	})
+	if err := NormalizeAndValidate(&settings); err == nil || !strings.Contains(err.Error(), "invalid banner media") {
+		t.Fatalf("unsafe banner media error = %v", err)
+	}
+}
+
+func TestNormalizeAndValidateTelegramButtonCodeAndColor(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Content.Commerce.PayButton = TelegramButtonSettings{
+		Text:              "  Оплатить  ",
+		IconCustomEmojiID: `<tg-emoji emoji-id="5206401524200145033">emoji</tg-emoji>`,
+		Style:             " SUCCESS ",
+	}
+
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	button := settings.Content.Commerce.PayButton
+	if button.Text != "Оплатить" || button.IconCustomEmojiID != "5206401524200145033" || button.Style != "success" {
+		t.Fatalf("Telegram button was not normalized: %+v", button)
+	}
+}
+
+func TestWebPageSettingsHaveSafeDefaultsAndValidation(t *testing.T) {
+	settings := DefaultSettings()
+	if settings.Content.WebPage.Title != "Link-Bot" || settings.Content.WebPage.FaviconURL != "/mini-app/assets/brand-mark.png" {
+		t.Fatalf("unexpected web page defaults: %+v", settings.Content.WebPage)
+	}
+
+	settings.Content.WebPage.Title = "  Мой VPN  "
+	settings.Content.WebPage.Description = "  Быстрый и безопасный доступ  "
+	settings.Content.WebPage.FaviconURL = "https://cdn.example.com/favicon.png"
+	if err := NormalizeAndValidate(&settings); err != nil {
+		t.Fatalf("NormalizeAndValidate() error = %v", err)
+	}
+	if settings.Content.WebPage.Title != "Мой VPN" || settings.Content.WebPage.Description != "Быстрый и безопасный доступ" {
+		t.Fatalf("web metadata was not normalized: %+v", settings.Content.WebPage)
+	}
+
+	settings.Content.WebPage.FaviconURL = "javascript:alert(1)"
+	if err := NormalizeAndValidate(&settings); err == nil {
+		t.Fatal("unsafe favicon URL was accepted")
+	}
+}

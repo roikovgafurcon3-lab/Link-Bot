@@ -1,0 +1,263 @@
+/* The appearance setting for buttons/tariffs supplies all control backgrounds.
+   Keep card surfaces independent, including when both materials use glass. */
+:root:not([data-admin-console="on"]) { --control-material: var(--control-bg); }
+:root:not([data-admin-console="on"])[data-glass="on"] { --control-material: color-mix(in srgb, var(--control-bg) 28%, transparent); }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:not([data-admin-console="on"])[data-glass="on"] { --control-material: var(--control-bg); }
+}
+
+/* Layered importance wins over the legacy per-section glass overrides without
+   tying this shared theme rule to a particular page or its selector weight. */
+@layer control-material {
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :where(
+    button:not(.bottom-nav__item):not(.desktop-sidebar__item):not(.browser-logout--sidebar):not(.modal__backdrop):not([data-action="administrators-color"]):not(.admin-localization-menu__option),
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]),
+    textarea, select,
+    .admin-localization-select, .admin-logo-field__upload, .surface-upload,
+    .admin-users__search, .admin-settings-search__field,
+    .admin-toggle, .admin-feature-toggle, .admin-access__permission,
+    .admin-moynalog__methods label, .admin-subpage-platforms label,
+    .admin-reminder-style__option,
+    .admin-telegram-button > summary, .admin-reminder-template > summary,
+    .admin-content-disclosure > summary, .admin-logo-field__advanced > summary,
+    .admin-partner-entry__summary, .admin-activity__entry > summary,
+    .admin-partner-entry__resource,
+    .pricing-card, .device-pack-trigger-row, .menu-row, .profile-row, .pay-row, .platform-btn, .quick-link, .pay-selector,
+    .admin-content-groups, .admin-access__tabs, .admin-broadcast__tabs, .admin-mail__tabs,
+    .admin-promo-type-switch, .admin-promo-unit-switch,
+    .bottom-nav:not([data-nav-style="notch"]), .bottom-nav__surface,
+    .switch-selection, .mantine-Input-input:not([type="checkbox"]):not([type="radio"])
+  ),
+  :root:not([data-admin-console="on"]) :is(.admin-localization-menu, .mantine-Combobox-dropdown, .mantine-Select-dropdown) {
+    background: var(--control-material) !important;
+  }
+
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :where(
+    button:not(.bottom-nav__item):not(.desktop-sidebar__item):not(.browser-logout--sidebar):not([data-action="administrators-color"]),
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]),
+    textarea, select
+  ) { color: var(--button-text) !important; }
+
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :is(button.is-danger, .admin-icon-button--danger, .admin-promo-row__delete, .admin-profile-modal__delete, .admin-partner-action--reject) { color: var(--danger) !important; }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .admin-partner-action--accept { color: var(--success) !important; }
+  :root:not([data-admin-console="on"]) :is(.admin-localization-menu, .admin-localization-menu__option, .mantine-Combobox-dropdown, .mantine-Combobox-option, .mantine-Select-dropdown) { color: var(--button-text) !important; }
+
+  :root:not([data-admin-console="on"]) #app :is(.admin-users__search, .admin-settings-search__field) input {
+    background: transparent !important; background-image: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+  :root:not([data-admin-console="on"]) #app [data-animated-switch] .tab {
+    background: transparent !important; background-image: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+  :root:not([data-admin-console="on"]) #app .ab-tabs > button {
+    background: transparent !important; background-image: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+  :root:not([data-admin-console="on"]) #app .switch-selection { border-color: var(--accent) !important; }
+  :root:not([data-admin-console="on"]) #app :is(.admin-telegram-button, .admin-reminder-template, .admin-content-disclosure, .admin-logo-field__advanced) > summary { border-radius: inherit; }
+}
+
+/* Apply the existing glass texture and blur to the control tint, independently
+   of the card tint. A portalled menu keeps its stronger blur for legibility. */
+@layer control-material {
+  :root:not([data-admin-console="on"])[data-glass="on"] :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :where(
+    button:not(.bottom-nav__item):not(.desktop-sidebar__item):not(.browser-logout--sidebar):not(.modal__backdrop):not([data-action="administrators-color"]):not(.admin-localization-menu__option),
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]),
+    textarea, select,
+    .admin-logo-field__upload, .surface-upload, .admin-users__search, .admin-settings-search__field,
+    .admin-toggle, .admin-feature-toggle, .admin-access__permission,
+    .admin-moynalog__methods label, .admin-subpage-platforms label, .admin-reminder-style__option,
+    .admin-telegram-button > summary, .admin-reminder-template > summary, .admin-content-disclosure > summary,
+    .admin-logo-field__advanced > summary, .admin-partner-entry__summary, .admin-activity__entry > summary,
+    .admin-partner-entry__resource, .pricing-card, .device-pack-trigger-row, .menu-row, .profile-row, .pay-row, .platform-btn, .quick-link, .pay-selector,
+    .admin-content-groups, .admin-access__tabs, .admin-broadcast__tabs, .admin-mail__tabs,
+    .admin-promo-type-switch, .admin-promo-unit-switch, .switch-selection,
+    .bottom-nav:not([data-nav-style="notch"]), .bottom-nav__surface, .mantine-Input-input:not([type="checkbox"]):not([type="radio"])
+  ) {
+    background-image: var(--glass-texture) !important;
+    background-size: 128px 128px, 100% 100% !important;
+    backdrop-filter: var(--glass-backdrop) !important; -webkit-backdrop-filter: var(--glass-backdrop) !important;
+  }
+  :root:not([data-admin-console="on"])[data-glass="on"] :is(.admin-localization-menu, .mantine-Combobox-dropdown, .mantine-Select-dropdown) {
+    background-image: var(--glass-texture) !important;
+    background-size: 128px 128px, 100% 100% !important;
+    backdrop-filter: var(--glass-menu-backdrop) !important; -webkit-backdrop-filter: var(--glass-menu-backdrop) !important;
+  }
+
+  /* Composite purchase rows own one pane; their inner buttons add no second tint. */
+  :root:not([data-admin-console="on"]) #app .device-pack-trigger-row > button {
+    background: transparent !important; background-image: none !important;
+    box-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+
+  :root:not([data-admin-console="on"])[data-glass="on"] #app .ab-tabs > button {
+    background: transparent !important; background-image: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+
+  /* Switch rows are plain labels around the switch, rather than extra surfaces. */
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :is(
+    .admin-toggle:not(.menu-row), .admin-toggle-row,
+    .audience-squads > label, .admin-squad-option, .admin-access__permission,
+    .admin-moynalog__methods label, .admin-subpage-platforms label
+  ) {
+    background: transparent !important; background-image: none !important;
+    border: 0 !important; box-shadow: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+
+  /* Checkout content supplies a surface; its inner promo container stays plain. */
+  :root:not([data-admin-console="on"]) #app .card--checkout :is(.checkout-payment, .checkout-promo),
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) button:has(> [data-app-icon="close"]),
+  :root:not([data-admin-console="on"]) #app .p2p-menu__close {
+    background: transparent !important; background-image: none !important;
+    border: 0 !important; box-shadow: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+
+  /* Payment methods need a dark backdrop without stacked grain or frame halos. */
+  :root:not([data-admin-console="on"]) .modal--payment-methods .modal__sheet {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .32) !important;
+  }
+  :root:not([data-admin-console="on"])[data-glass="on"] .modal--payment-methods .modal__sheet {
+    background: color-mix(in srgb, var(--surface) 92%, transparent) !important;
+    background-image: none !important;
+    border-color: var(--line) !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .32) !important;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .modal--payment-methods .pay-row {
+    background: var(--control-bg) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+
+  /* Menu rows share their container instead of receiving a pane per button. */
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :is(.commerce-menu__actions button, .subscription-switcher__menu button) {
+    background: transparent !important; background-image: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+    color: var(--text) !important;
+    transition: background-color 160ms ease, color 160ms ease;
+  }
+  :root:not([data-admin-console="on"]) .commerce-menu__actions button:disabled {
+    opacity: .48;
+    cursor: default;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :is(.commerce-menu__actions button, .subscription-switcher__menu button):hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text) 4%, transparent) !important;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .subscription-switcher__item:is(.is-active, .is-switching) {
+    background: color-mix(in srgb, var(--accent) 10%, transparent) !important;
+    border-color: transparent !important;
+    border-inline-start-color: var(--accent) !important;
+    color: var(--accent) !important;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :is(.commerce-menu__actions button:last-child, .subscription-switcher__delete) {
+    color: var(--danger) !important;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) :is(.commerce-menu__actions button, .subscription-switcher__menu button):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Purchase sheets keep one dark surface, with no stacked grain or halos. */
+  :root:not([data-admin-console="on"]) .modal__sheet--device-packs-purchase {
+    background: color-mix(in srgb, var(--surface) 92%, transparent) !important;
+    background-image: none !important;
+    border-color: var(--line) !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .32) !important;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .modal__sheet--device-packs-purchase :is(.pricing-card, .device-pack-modal__actions .btn) {
+    background: var(--control-bg) !important;
+    background-image: none !important;
+    border-color: var(--line) !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  }
+  :root:not([data-admin-console="on"]) :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .modal__sheet--device-packs-purchase .pricing-card.selected {
+    border-color: var(--accent) !important;
+  }
+  :root:not([data-admin-console="on"]) .modal__sheet--device-packs-purchase::before,
+  :root:not([data-admin-console="on"]) .modal__sheet--device-packs-purchase :is(.pricing-card, .device-pack-modal__actions .btn)::before {
+    content: none !important;
+  }
+
+  :root:not([data-admin-console="on"])[data-frames="off"] .modal__sheet--device-packs-purchase,
+  :root:not([data-admin-console="on"])[data-frames="off"] :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .modal__sheet--device-packs-purchase :is(.pricing-card, .device-pack-modal__actions .btn) {
+    border-color: transparent !important;
+  }
+  :root:not([data-admin-console="on"])[data-frames="off"] :is(#app, .modal, .mantine-Modal-root, .mantine-Drawer-root) .modal__sheet--device-packs-purchase .pricing-card.selected {
+    border-color: transparent !important;
+    background: color-mix(in srgb, var(--accent) 14%, var(--control-bg)) !important;
+  }
+}
+
+/* Identity providers retain their colors in both cabinet materials. Keep this
+   in the same layer as the control theme so its important rules can coexist. */
+@layer control-material {
+  :root:not([data-admin-console="on"]) #app .browser-auth__telegram {
+    --provider-background: #229ed9;
+    --provider-text: #fff;
+    --provider-glow: rgba(34, 158, 217, .28);
+  }
+  :root:not([data-admin-console="on"]) #app .browser-auth__google {
+    --provider-background: #fff;
+    --provider-text: #15191e;
+    --provider-glow: rgba(255, 255, 255, .14);
+  }
+  :root:not([data-admin-console="on"]) #app .browser-auth :is(.browser-auth__telegram, .browser-auth__google) {
+    background: var(--provider-background) !important;
+    background-image: none !important;
+    color: var(--provider-text) !important;
+    box-shadow: 0 6px 20px var(--provider-glow), 0 0 16px var(--provider-glow) !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+    border-radius: 11px;
+    transition: background-color .2s ease, box-shadow .2s ease, transform .2s ease;
+  }
+  :root:not([data-admin-console="on"]) #app .browser-auth :is(.browser-auth__telegram, .browser-auth__google):hover:not(:disabled) {
+    box-shadow: 0 8px 26px var(--provider-glow), 0 0 22px var(--provider-glow) !important;
+    transform: translateY(-1px);
+  }
+  :root:not([data-admin-console="on"]) #app .browser-auth__telegram:hover:not(:disabled) { --provider-background: #2aa8e5; }
+  :root:not([data-admin-console="on"]) #app .browser-auth__google:hover:not(:disabled) { --provider-background: #f5f7fa; }
+
+  :root:not([data-admin-console="on"]) #app .browser-email__switch {
+    background: transparent !important; background-image: none !important;
+    border: 0 !important; box-shadow: none !important;
+    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+    color: var(--accent) !important;
+  }
+}
+
+/* The payment selector is a checkout card, independent of the button tint. */
+@layer control-material {
+  :root:not([data-admin-console="on"]) #app .checkout-sections > .checkout-method {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+  }
+  :root:not([data-admin-console="on"])[data-glass="on"] #app .checkout-sections > .checkout-method {
+    background: var(--glass-background) !important;
+  }
+
+  /* Keep the whole field visible inside the card. An outside focus outline
+     was clipped by the promo container, leaving only its top/bottom edges. */
+  :root:not([data-admin-console="on"]) #app .checkout-sections .promo-box__input {
+    background: color-mix(in srgb, var(--text) 5%, transparent) !important;
+    background-image: none !important;
+    border: 1px solid var(--line) !important;
+    color: var(--text) !important;
+    outline: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  :root:not([data-admin-console="on"]) #app .checkout-sections .promo-box__input:is(:focus, :focus-visible) {
+    border-color: var(--accent) !important;
+    background: color-mix(in srgb, var(--text) 8%, transparent) !important;
+  }
+  :root:not([data-admin-console="on"])[data-frames="off"] #app .checkout-sections .promo-box__input {
+    border-color: transparent !important;
+  }
+}

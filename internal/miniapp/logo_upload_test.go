@@ -1,0 +1,276 @@
+package miniapp
+
+import (
+	"bytes"
+	"encoding/json"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/png"
+	"io/fs"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"link-bot/internal/database"
+)
+
+func testLogoPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	canvas := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			canvas.Set(x, y, color.NRGBA{R: 255, G: 120, B: 0, A: 255})
+		}
+	}
+	var output bytes.Buffer
+	if err := png.Encode(&output, canvas); err != nil {
+		t.Fatalf("encode logo: %v", err)
+	}
+	return output.Bytes()
+}
+
+func testBannerGIF(t *testing.T) []byte {
+	t.Helper()
+	canvas := image.NewPaletted(image.Rect(0, 0, 2, 1), color.Palette{color.Black, color.White})
+	canvas.SetColorIndex(1, 0, 1)
+	next := image.NewPaletted(canvas.Bounds(), canvas.Palette)
+	next.SetColorIndex(0, 0, 1)
+	var output bytes.Buffer
+	if err := gif.EncodeAll(&output, &gif.GIF{Image: []*image.Paletted{canvas, next}, Delay: []int{10, 10}, LoopCount: 0}); err != nil {
+		t.Fatalf("encode banner GIF: %v", err)
+	}
+	return output.Bytes()
+}
+
+func TestStoreUploadedLogoPersistsContentAddressedFile(t *testing.T) {
+	uploadDir := t.TempDir()
+	data := testLogoPNG(t, 256, 256)
+
+	logoURL, err := storeUploadedLogo(uploadDir, data)
+	if err != nil {
+		t.Fatalf("store logo: %v", err)
+	}
+	if !strings.HasPrefix(logoURL, "/mini-app/uploads/logo-") || !strings.HasSuffix(logoURL, ".png") {
+		t.Fatalf("unexpected logo URL: %q", logoURL)
+	}
+	fileName := strings.TrimPrefix(logoURL, "/mini-app/uploads/")
+	stored, err := os.ReadFile(filepath.Join(uploadDir, fileName))
+	if err != nil {
+		t.Fatalf("read stored logo: %v", err)
+	}
+	if !bytes.Equal(stored, data) {
+		t.Fatal("stored logo bytes differ from upload")
+	}
+
+	duplicateURL, err := storeUploadedLogo(uploadDir, data)
+	if err != nil {
+		t.Fatalf("store duplicate logo: %v", err)
+	}
+	if duplicateURL != logoURL {
+		t.Fatalf("duplicate URL = %q, want %q", duplicateURL, logoURL)
+	}
+}
+
+func TestStoreUploadedBannerSupportsRequestedFormats(t *testing.T) {
+	uploadDir := t.TempDir()
+	fixtures := []struct {
+		name        string
+		data        []byte
+		mediaType   string
+		extension   string
+		contentType string
+	}{
+		{name: "png", data: testLogoPNG(t, 32, 16), mediaType: "png", extension: ".png", contentType: "image/png"},
+		{name: "gif", data: testBannerGIF(t), mediaType: "gif", extension: ".gif", contentType: "image/gif"},
+		{name: "mp4", data: []byte("\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"), mediaType: "mp4", extension: ".mp4", contentType: "video/mp4"},
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			bannerURL, mediaType, err := storeUploadedBanner(uploadDir, fixture.data)
+			if err != nil {
+				t.Fatalf("store banner: %v", err)
+			}
+			if mediaType != fixture.mediaType || !strings.HasPrefix(bannerURL, "/mini-app/uploads/banner-") || !strings.HasSuffix(bannerURL, fixture.extension) {
+				t.Fatalf("stored banner = %q %q", bannerURL, mediaType)
+			}
+			response := httptest.NewRecorder()
+			(&Handler{logoUploadDir: uploadDir}).serveUploadedLogo(response, httptest.NewRequest(http.MethodGet, bannerURL, nil))
+			if response.Code != http.StatusOK || response.Header().Get("Content-Type") != fixture.contentType {
+				t.Fatalf("served banner = %d %q", response.Code, response.Header().Get("Content-Type"))
+			}
+			if !bytes.Equal(response.Body.Bytes(), fixture.data) {
+				t.Fatal("banner bytes changed: uploads must retain original quality and animation")
+			}
+		})
+	}
+}
+
+func TestStoreUploadedBannerRejectsUnsupportedAndOversizedFiles(t *testing.T) {
+	uploadDir := t.TempDir()
+	if _, _, err := storeUploadedBanner(uploadDir, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`)); err != errBannerUnsupported {
+		t.Fatalf("SVG error = %v, want %v", err, errBannerUnsupported)
+	}
+	if _, _, err := storeUploadedBanner(uploadDir, make([]byte, maxBannerUploadSize+1)); err != errBannerTooLarge {
+		t.Fatalf("oversized error = %v, want %v", err, errBannerTooLarge)
+	}
+}
+
+func TestStoreUploadedFaviconUsesSeparateContentAddressedFile(t *testing.T) {
+	uploadDir := t.TempDir()
+	faviconURL, err := storeUploadedImage(uploadDir, testLogoPNG(t, 128, 128), "favicon")
+	if err != nil {
+		t.Fatalf("store favicon: %v", err)
+	}
+	if !strings.HasPrefix(faviconURL, "/mini-app/uploads/favicon-") || !strings.HasSuffix(faviconURL, ".png") {
+		t.Fatalf("unexpected favicon URL: %q", faviconURL)
+	}
+	request := httptest.NewRequest(http.MethodGet, faviconURL, nil)
+	response := httptest.NewRecorder()
+	(&Handler{logoUploadDir: uploadDir}).serveUploadedLogo(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("favicon response = %d %q", response.Code, response.Header().Get("Content-Type"))
+	}
+}
+
+func TestStoreUploadedLogoRejectsUnsafeOrOversizedFiles(t *testing.T) {
+	uploadDir := t.TempDir()
+	if _, err := storeUploadedLogo(uploadDir, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`)); err != errLogoUnsupported {
+		t.Fatalf("SVG error = %v, want %v", err, errLogoUnsupported)
+	}
+	if _, err := storeUploadedLogo(uploadDir, make([]byte, maxLogoUploadSize+1)); err != errLogoTooLarge {
+		t.Fatalf("oversized error = %v, want %v", err, errLogoTooLarge)
+	}
+	if _, err := storeUploadedLogo(uploadDir, testLogoPNG(t, 4097, 1)); err != errLogoDimensions {
+		t.Fatalf("dimensions error = %v, want %v", err, errLogoDimensions)
+	}
+}
+
+func TestAdminLogoUploadAndPublicServing(t *testing.T) {
+	initMiniAppTestConfig()
+	uploadDir := t.TempDir()
+	handler := &Handler{logoUploadDir: uploadDir}
+	data := testLogoPNG(t, 128, 128)
+
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+	part, err := writer.CreateFormFile("logo", "brand.png")
+	if err != nil {
+		t.Fatalf("create logo form field: %v", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatalf("write logo form field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/mini-app/admin/logo/upload", &requestBody)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	recorder := httptest.NewRecorder()
+	handler.handleAdminLogoUpload(recorder, request, &session{User: telegramUser{ID: 1}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if !payload.OK || payload.Data.URL == "" {
+		t.Fatalf("invalid upload response: %s", recorder.Body.String())
+	}
+
+	serveRequest := httptest.NewRequest(http.MethodGet, payload.Data.URL, nil)
+	serveRecorder := httptest.NewRecorder()
+	handler.serveUploadedLogo(serveRecorder, serveRequest)
+	if serveRecorder.Code != http.StatusOK {
+		t.Fatalf("serve status = %d", serveRecorder.Code)
+	}
+	if contentType := serveRecorder.Header().Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("content type = %q", contentType)
+	}
+	if cacheControl := serveRecorder.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "immutable") {
+		t.Fatalf("cache control = %q", cacheControl)
+	}
+	if !bytes.Equal(serveRecorder.Body.Bytes(), data) {
+		t.Fatal("served logo bytes differ from upload")
+	}
+}
+
+func TestAdminLogoUploadSessionAcceptsMultipartRequest(t *testing.T) {
+	initMiniAppTestConfig()
+	staticFS, err := fs.Sub(embeddedStatic, "static")
+	if err != nil {
+		t.Fatalf("open embedded mini app files: %v", err)
+	}
+	handler := &Handler{logoUploadDir: t.TempDir(), staticFS: staticFS}
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+	part, err := writer.CreateFormFile("logo", "brand.png")
+	if err != nil {
+		t.Fatalf("create logo form field: %v", err)
+	}
+	if _, err := part.Write(testLogoPNG(t, 64, 64)); err != nil {
+		t.Fatalf("write logo form field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/mini-app/admin/logo/upload", &requestBody)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("X-Telegram-Init-Data", "invalid-test-init-data")
+	recorder := httptest.NewRecorder()
+
+	mux.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("multipart request status = %d, body = %s; want auth validation to run", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "JSON required") {
+		t.Fatalf("multipart request was rejected as JSON: %s", recorder.Body.String())
+	}
+}
+
+func TestSessionJSONRouteStillRejectsMultipartRequest(t *testing.T) {
+	handler := &Handler{}
+	request := httptest.NewRequest(http.MethodPost, "/api/mini-app/bootstrap", strings.NewReader("body"))
+	request.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+	recorder := httptest.NewRecorder()
+
+	handler.withSession(func(http.ResponseWriter, *http.Request, *session, *database.Customer) {
+		t.Fatal("JSON route handler should not be called")
+	}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("multipart request status = %d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+func TestServeUploadedLogoRejectsUnknownPaths(t *testing.T) {
+	handler := &Handler{logoUploadDir: t.TempDir()}
+	for _, target := range []string{
+		"/mini-app/uploads/../settings.json",
+		"/mini-app/uploads/not-a-logo.png",
+		"/mini-app/uploads/",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.serveUploadedLogo(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", target, recorder.Code)
+		}
+	}
+}

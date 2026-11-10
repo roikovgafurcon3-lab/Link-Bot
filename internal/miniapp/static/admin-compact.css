@@ -1,0 +1,688 @@
+/* Shared admin density. Typography and the configured card/glass material stay intact. */
+#app :is(#page-admin, .rn-content) {
+  --admin-control-height: 36px;
+  --admin-control-radius: 7px;
+  --admin-card-radius: 10px;
+}
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-editor, .admin-content-panel, .admin-subpage, .admin-ai,
+  .admin-integrations, .admin-moynalog, .surface-settings, .appearance-theme,
+  .admin-access, .admin-status, .admin-user-detail, .admin-user-subscriptions
+) { gap: 12px; }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-content-panel .admin-editor__section, .admin-ai__card,
+  .admin-subpage-client, .admin-moynalog-receipt, .surface-card,
+  .appearance-theme > .admin-editor__section, .admin-appearance-group,
+  .admin-status__service, .admin-status__section, .admin-status__error,
+  .admin-user-subscription, .admin-user-controls__group--balance,
+  .admin-user-direct, .admin-access-card, .admin-event
+) { padding: 12px; gap: 12px; border-radius: var(--admin-card-radius); }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-content-disclosure, .admin-telegram-button, .admin-reminder-template,
+  .admin-editor__subsection, .admin-broadcast-button, .admin-faq-item,
+  .admin-integration, .admin-finance-card, .admin-settings-search__results,
+  .admin-settings-search__empty, .admin-localization__preview
+) { border-radius: var(--admin-card-radius); }
+
+#app :is(#page-admin, .rn-content) .admin-analytics__hero > .admin-ga4 {
+  border-radius: 0 var(--admin-card-radius) var(--admin-card-radius) var(--admin-card-radius);
+}
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-content-panel .admin-editor__subsection,
+  .admin-content-panel .admin-broadcast-button, .admin-content-panel .admin-faq-item
+) { padding: 10px; gap: 12px; }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-editor__grid, .admin-content-disclosure__fields,
+  .admin-broadcast-button__grid, .admin-subpage-list,
+  .admin-ai__card, .admin-moynalog__credentials
+) { gap: 12px; }
+
+#app :is(#page-admin, .rn-content) :is(.admin-field, .admin-broadcast-button label) { gap: 6px; }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-field__control:not(textarea):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  .admin-email-broadcast__field input, .admin-broadcast-button input,
+  .admin-broadcast-button select, .admin-user-control-row input,
+  .admin-finance__custom input
+) {
+  min-height: var(--admin-control-height);
+  padding: 8px 10px;
+  border-radius: var(--admin-control-radius);
+}
+
+#app :is(#page-admin, .rn-content) :is(textarea.admin-field__control, .admin-email-broadcast__field textarea) {
+  min-height: 80px; padding: 8px 10px; border-radius: var(--admin-control-radius);
+}
+#app :is(#page-admin, .rn-content) textarea.admin-ai__prompt { height: 180px; min-height: 180px; }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-content-nav button, .admin-reminder-test, .admin-reminder-style__option,
+  .admin-broadcast-style__option, .admin-subpage-builtins__client, .admin-subpage-add,
+  .admin-ai__button, .admin-ai__model, .admin-ai__reset,
+  .admin-moynalog__actions button, .admin-moynalog-receipt__state button,
+  .admin-logo-field__actions > label, .admin-logo-field__actions > button,
+  .admin-integration__save, .admin-broadcast__primary, .admin-broadcast__secondary,
+  .admin-broadcast__actions button, .admin-broadcast__reset,
+  .admin-finance__more, .admin-users__more, .admin-user-direct__compose,
+  .admin-user-direct__actions button, .admin-user-direct__confirm button,
+  .admin-user-controls__group button, .admin-partners__create-fields button,
+  .admin-partner-entry__actions button, .surface-button
+) {
+  min-height: var(--admin-control-height);
+  height: auto; padding: 8px 10px; border-radius: var(--admin-control-radius);
+}
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-icon-button, .admin-faq-item__head button, .admin-subpage-client__actions button,
+  .admin-builder-row__actions button, .admin-moynalog__section-head > button,
+  .admin-access__back, .admin-status__header button
+) {
+  width: 34px; min-width: 34px; height: 34px; min-height: 34px;
+  flex: 0 0 34px; padding: 6px; border-radius: var(--admin-control-radius);
+}
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-ai__power, .admin-subpage .admin-toggle, .admin-feature-toggle,
+  .admin-moynalog__methods label, .admin-subpage-platforms label
+) { min-height: 38px; padding: 8px 10px; border-radius: var(--admin-control-radius); }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-content-disclosure, .admin-telegram-button, .admin-reminder-template
+) > summary { min-height: 38px; padding: 9px 10px; }
+
+#app :is(#page-admin, .rn-content) :is(
+  .admin-content-disclosure__body, .admin-telegram-button__body, .admin-reminder-template__body
+) { padding: 2px 10px 10px; gap: 12px; }
+
+#app :is(#page-admin, .rn-content) .admin-content-groups { padding: 3px; gap: 3px; border-radius: var(--admin-card-radius); }
+#app :is(#page-admin, .rn-content) :is(.admin-content-nav, .admin-logo-field, .admin-logo-field__body) { gap: 8px; }
+#app :is(#page-admin, .rn-content) .admin-content-tabs { gap: 6px; }
+#app :is(#page-admin, .rn-content) .admin-logo-field__main { grid-template-columns: 48px minmax(0, 1fr); gap: 10px; }
+#app :is(#page-admin, .rn-content) .admin-logo-field__preview { width: 48px; border-radius: var(--admin-control-radius); }
+#app :is(#page-admin, .rn-content) .admin-logo-field__advanced { padding-inline: 10px; border-radius: var(--admin-control-radius); }
+#app :is(#page-admin, .rn-content) .admin-logo-field__advanced summary { min-height: 36px; padding-block: 9px; }
+#app :is(#page-admin, .rn-content) .admin-logo-field__advanced[open] { padding-bottom: 10px; }
+#app :is(#page-admin, .rn-content) :is(.admin-settings-search__field, .admin-settings-search__results, .admin-settings-search__empty) { border-radius: var(--admin-card-radius); }
+#app :is(#page-admin, .rn-content) .admin-settings-search__field { min-height: 40px; padding-inline: 10px; }
+#app :is(#page-admin, .rn-content) .admin-toggle { min-height: 38px; }
+#app :is(#page-admin, .rn-content) .admin-menu-group .menu-row { min-height: 40px; padding: 8px 10px; border-radius: 7px; }
+#app :is(#page-admin, .rn-content) .admin-range-field { padding-block: 9px 7px; }
+#app :is(#page-admin, .rn-content) .admin-color-field { min-height: 42px; border-radius: 7px; }
+#app :is(#page-admin, .rn-content) .admin-color-field input[type="color"] { height: auto; min-height: 0; align-self: stretch; }
+#app :is(#page-admin, .rn-content) .admin-nav-option { padding: 24px 8px 10px; gap: 8px; border-radius: 10px; }
+
+/* These dropdowns are portalled outside the admin page. */
+.admin-localization-select {
+  min-height: 36px; padding: 8px 32px 8px 10px; border-radius: 7px;
+}
+.admin-localization-menu { padding: 4px; border-radius: 9px; }
+.admin-localization-menu__option { min-height: 36px; padding-block: 8px; border-radius: 6px; }
+
+/* Native console controls follow the same density without changing their labels. */
+html[data-admin-console="on"] :is(.rn-main, .rn-user-operations) .mantine-Input-input:not(textarea) {
+  min-height: 36px; height: auto; border-radius: 7px;
+}
+html[data-admin-console="on"] :is(.rn-main, .rn-user-operations) .mantine-Button-root:not(.cursor-preset):not(.admin-nav-option) {
+  min-height: 36px; height: auto; border-radius: 7px;
+}
+html[data-admin-console="on"] .rn-main :is(.rn-clickable-card, .rn-settings-panel) { padding: 10px; gap: 10px; }
+
+/* Admin dialogs live outside the page; customer forms keep their own sizing. */
+#app :is(.admin-plan-modal, .admin-profile-modal) .admin-field__control:not(textarea) {
+  min-height: 36px; padding: 8px 10px; border-radius: 7px;
+}
+#app :is(.admin-plan-modal, .admin-profile-modal) textarea.admin-field__control { padding: 8px 10px; border-radius: 7px; }
+#app :is(.admin-plan-modal__save, .admin-profile-modal__footer .btn) { min-height: 36px; padding: 8px 10px; border-radius: 7px; }
+
+/* Administrator roles and their activity journal use the same compact surfaces. */
+#app :is(#page-admin, .rn-content) .admin-access { gap: 12px; }
+#app :is(#page-admin, .rn-content) .admin-access .admin-access__header { min-height: 34px; }
+#app :is(#page-admin, .rn-content) .admin-access .admin-access__permissions { padding: 10px; gap: 6px; }
+#app :is(#page-admin, .rn-content) .admin-access__permissions header { padding: 0 2px 4px; }
+#app :is(#page-admin, .rn-content) .admin-access__permission {
+  min-height: 38px; padding: 8px 10px; gap: 10px;
+  border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface);
+}
+#app :is(#page-admin, .rn-content) .admin-access__permission input { right: 10px; width: 18px; height: 18px; }
+#app :is(#page-admin, .rn-content) .admin-access__permission > i { width: 18px; height: 18px; border-radius: 5px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-access__permission input:checked + i { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+#app :is(#page-admin, .rn-content) .admin-access__permission input:checked + i svg { color: var(--accent); }
+#app :is(#page-admin, .rn-content) .admin-access__permission:has(input:disabled) { cursor: default; }
+#app :is(#page-admin, .rn-content) .admin-access__permission.is-owner input {
+  -webkit-appearance: none; appearance: none; opacity: 0 !important;
+}
+#app :is(#page-admin, .rn-content) .admin-access__permission.is-owner input:disabled + i { opacity: 1; cursor: default; }
+#app :is(#page-admin, .rn-content) .admin-access__permission.is-owner .admin-access__lock {
+  position: absolute; z-index: 1; top: 2px; left: 2px;
+  display: grid; place-items: center; width: 14px; height: 14px;
+  transform: translateX(14px); pointer-events: none;
+}
+#app :is(#page-admin, .rn-content) .admin-access__permission.is-owner .admin-access__lock svg {
+  display: block; width: 9px; height: 9px; opacity: 1; color: #fff;
+}
+#app :is(#page-admin, .rn-content) .admin-access__person { gap: 10px; }
+#app :is(#page-admin, .rn-content) .admin-access__person .admin-user-avatar { width: 42px; height: 42px; }
+#app :is(#page-admin, .rn-content) .admin-access__row { min-height: 54px; padding: 8px 10px; grid-template-columns: 36px minmax(0, 1fr) minmax(64px, 100px) 17px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-access__row .admin-user-avatar { width: 36px; height: 36px; }
+#app :is(#page-admin, .rn-content) .admin-access .admin-users__search { min-height: 36px; padding-inline: 10px; border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-access .admin-users__search input { min-height: 36px; height: 36px; }
+#app :is(#page-admin, .rn-content) .admin-access__tabs { padding: 3px; gap: 3px; border-radius: 10px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-access__tabs .tab { min-height: 32px; padding: 7px 10px; border-radius: 7px; }
+#app :is(#page-admin, .rn-content) .admin-access__tabs .switch-selection { border-radius: 7px; border-color: var(--line); background: var(--surface-strong); }
+#app :is(#page-admin, .rn-content) :is(
+  .admin-access__presets button, .admin-access__permissions-head button,
+  .admin-access__permissions header button, .admin-access__save, .admin-access__add,
+  .admin-access__remove button, .admin-access__error button
+) { min-height: 36px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-access__presets button.is-selected { border-color: var(--accent); }
+#app :is(#page-admin, .rn-content) .admin-access__color { gap: 8px; }
+#app :is(#page-admin, .rn-content) .admin-access__color > div { gap: 8px; }
+#app :is(#page-admin, .rn-content) .admin-activity__toolbar { grid-template-columns: minmax(0, 1fr) 36px; }
+#app :is(#page-admin, .rn-content) .admin-activity__toolbar > button { min-height: 36px; border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-activity__filter .admin-localization-select { width: auto; flex: 1; max-width: 70%; font-weight: 600; }
+#app :is(#page-admin, .rn-content) .admin-activity__filter small { flex: 0 0 auto; order: 1; }
+#app :is(#page-admin, .rn-content) .admin-activity__entry { border-radius: 10px; }
+#app :is(#page-admin, .rn-content) .admin-activity__entry > summary { padding: 9px 10px; grid-template-columns: 22px minmax(0, 1fr) auto; }
+#app :is(#page-admin, .rn-content) .admin-activity__body { padding: 0 10px 10px; gap: 8px; }
+#app :is(#page-admin, .rn-content) .admin-access :is(button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Lists are collections of separate cards, without a second shared pane. */
+#app :is(#page-admin, .rn-content) .admin-access .admin-users__list {
+  display: grid; gap: 8px; overflow: visible; padding: 0;
+  border: 0 !important; border-radius: 0; background: transparent !important;
+  background-image: none !important; box-shadow: none !important;
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+}
+
+#app :is(#page-admin, .rn-content) :is(.admin-referrals, .admin-partners, .admin-broadcast, .admin-promo-admin) { display: grid; gap: 12px; }
+#app :is(#page-admin, .rn-content) :is(
+  .admin-referrals > .admin-editor__section, .admin-partners__create,
+  .admin-broadcast__section, .admin-mail__form, .admin-mail__delivery,
+  .admin-promo-panel, .admin-withdrawal
+) {
+  min-width: 0; display: grid; gap: 12px; margin: 0; padding: 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+#app :is(#page-admin, .rn-content) :is(.admin-referrals .admin-editor__section-head, .admin-promo-panel .admin-editor__section-head, .admin-broadcast__section-head) { margin: 0; }
+#app :is(#page-admin, .rn-content) :is(.admin-referrals, .admin-partners, .admin-broadcast, .admin-promo-admin) :is(
+  .admin-field__control, .admin-localization-select,
+  .admin-partners input, .admin-email-broadcast__field input, .admin-email-broadcast__field textarea,
+  .admin-broadcast-button input, .admin-broadcast-button select
+) { color: var(--text); background: var(--surface); border-radius: 7px; }
+#app :is(#page-admin, .rn-content) .admin-referrals :is(.admin-toggle-list, .admin-field) { margin: 0; }
+#app :is(#page-admin, .rn-content) .admin-referrals .admin-toggle-list { gap: 6px; }
+#app :is(#page-admin, .rn-content) .admin-referrals .admin-toggle {
+  min-height: 38px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface);
+}
+#app :is(#page-admin, .rn-content) :is(
+  .admin-partners input, .admin-partner-entry__actions input
+) { min-height: 36px; padding: 8px 10px; }
+#app :is(#page-admin, .rn-content) .admin-partners__section { display: grid; gap: 8px; }
+#app :is(#page-admin, .rn-content) .admin-partners__heading { margin: 0; }
+#app :is(#page-admin, .rn-content) .admin-partner-entry { border-radius: 10px; }
+#app :is(#page-admin, .rn-content) .admin-partner-entry__summary {
+  min-height: 54px; padding: 8px 10px; grid-template-columns: 36px minmax(0, 1fr) minmax(60px, auto) 16px; background: var(--surface);
+}
+#app :is(#page-admin, .rn-content) .admin-partner-entry__summary .admin-user-avatar { width: 36px; height: 36px; }
+#app :is(#page-admin, .rn-content) .admin-partner-entry__details { padding: 10px; gap: 10px; }
+#app :is(#page-admin, .rn-content) .admin-partner-entry__metrics { border: 0; gap: 6px; }
+#app :is(#page-admin, .rn-content) .admin-partner-entry__metrics > span { min-height: 44px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-partner-entry__resource { background: var(--surface); border-radius: 7px; }
+#app :is(#page-admin, .rn-content) :is(.admin-partners__empty, .admin-broadcast__empty) { margin: 0; padding: 10px 0; border: 0; }
+#app :is(#page-admin, .rn-content) .admin-broadcast__buttons { gap: 10px; }
+#app :is(#page-admin, .rn-content) .admin-broadcast .admin-broadcast-button { padding: 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-broadcast-button :is(label, .admin-field) { min-width: 0; display: grid; gap: 6px; }
+#app :is(#page-admin, .rn-content) .admin-broadcast-button .admin-field > span { color: var(--muted); }
+#app :is(#page-admin, .rn-content) .admin-broadcast__message { padding: 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) :is(.admin-broadcast__primary, .admin-broadcast__secondary, .admin-broadcast__reset) { margin: 0; }
+#app :is(#page-admin, .rn-content) :is(.admin-broadcast__tabs, .admin-mail__tabs, .admin-promo-type-switch, .admin-promo-unit-switch) {
+  padding: 3px; gap: 3px; margin: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+#app :is(#page-admin, .rn-content) :is(
+  .admin-broadcast__tabs button, .admin-mail__tabs button,
+  .admin-promo-type-switch button, .admin-promo-unit-switch button,
+  .admin-promo-submit, .admin-mail__button, .admin-withdrawal__actions button
+) { min-height: 36px; padding: 8px 10px; border-radius: 7px; }
+#app :is(#page-admin, .rn-content) :is(.admin-partners, .admin-broadcast, .admin-promo-admin, .admin-referrals) button:not(.admin-icon-button):not(.admin-promo-row__delete) { background: var(--surface); }
+#app :is(#page-admin, .rn-content) :is(.admin-broadcast__send, .admin-mail__button--primary) { color: var(--text) !important; }
+#app :is(#page-admin, .rn-content) :is(.admin-broadcast__tabs, .admin-mail__tabs, .admin-promo-type-switch, .admin-promo-unit-switch) button.is-active { border: 1px solid var(--accent); color: var(--text); background: var(--accent-soft); }
+#app :is(#page-admin, .rn-content) .admin-broadcast .surface-inline > .surface-button { width: 100%; }
+#app :is(#page-admin, .rn-content) .admin-promo-list { display: grid; gap: 8px; }
+#app :is(#page-admin, .rn-content) .admin-promo-admin :is(.admin-field, .admin-promo-submit) { margin: 0; }
+#app :is(#page-admin, .rn-content) .admin-promo-row { padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+#app :is(#page-admin, .rn-content) .admin-promo-row__delete { width: 34px; min-width: 34px; height: 34px; border-radius: 7px; background: var(--surface); }
+@media (max-width: 380px) {
+  #app :is(#page-admin, .rn-content) .admin-partner-entry__summary { grid-template-columns: 36px minmax(0, 1fr) 16px; }
+  #app :is(#page-admin, .rn-content) .admin-partner-entry__actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #app :is(#page-admin, .rn-content) .admin-partner-entry__actions label { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  #app :is(#page-admin, .rn-content) .admin-referrals .admin-editor__grid--three > :last-child { grid-column: 1 / -1; }
+  #app :is(#page-admin, .rn-content) .admin-broadcast-button__grid { grid-template-columns: 1fr; }
+  #app :is(#page-admin, .rn-content) .admin-broadcast-style > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+:root[data-glass="on"] #app :is(#page-admin, .rn-content) :is(.admin-referrals, .admin-partners, .admin-broadcast, .admin-promo-admin) :is(
+  .admin-editor__section, .admin-partners__create, .admin-broadcast__section, .admin-mail__form, .admin-mail__delivery,
+  .admin-field__control, .admin-localization-select, .admin-toggle,
+  .admin-partners input, .admin-partners button, .admin-partner-entry__summary,
+  .admin-partner-entry__resource, .admin-partner-entry__metrics > span,
+  .admin-email-broadcast__field input, .admin-email-broadcast__field textarea,
+  .admin-broadcast-button, .admin-broadcast-button input, .admin-broadcast-button select,
+  .admin-broadcast__message,
+  .admin-promo-row, .admin-withdrawal,
+  button:not(.admin-localization-menu__option), .admin-broadcast__tabs, .admin-mail__tabs, .admin-promo-type-switch, .admin-promo-unit-switch
+) {
+  background: var(--glass-background) !important; background-image: var(--glass-texture) !important;
+  background-size: 128px 128px, 100% 100%; border-color: var(--glass-border);
+  box-shadow: var(--glass-surface-shadow); backdrop-filter: var(--glass-backdrop); -webkit-backdrop-filter: var(--glass-backdrop);
+}
+:root[data-glass="on"] #app :is(#page-admin, .rn-content) :is(.admin-broadcast__tabs, .admin-mail__tabs, .admin-promo-type-switch, .admin-promo-unit-switch) button.is-active { border-color: var(--accent); }
+:root[data-glass="on"] #app .admin-broadcast-style__option.is-selected { border-color: var(--accent); }
+
+/* Status in the regular mini app: dense cards and readable signal lights. */
+html[data-admin-console="off"] #app #page-admin .admin-status {
+  gap: 8px;
+  padding: 2px 2px 12px;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__topline,
+html[data-admin-console="off"] #app #page-admin .admin-status__grid { gap: 8px; }
+html[data-admin-console="off"] #app #page-admin .admin-status__overview {
+  --status-signal: var(--success);
+  min-height: 48px;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__overview.is-attention,
+html[data-admin-console="off"] #app #page-admin .admin-status__service.is-offline,
+html[data-admin-console="off"] #app #page-admin .admin-status__inline-state.is-offline { --status-signal: var(--danger); }
+html[data-admin-console="off"] #app #page-admin .admin-status__service.is-unknown,
+html[data-admin-console="off"] #app #page-admin .admin-status__inline-state.is-unknown { --status-signal: var(--muted); }
+html[data-admin-console="off"] #app #page-admin :is(.admin-status__service, .admin-status__section) {
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__service-icon {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__service-icon svg { width: 15px; height: 15px; }
+html[data-admin-console="off"] #app #page-admin .admin-status__service-head { gap: 8px; }
+html[data-admin-console="off"] #app #page-admin .admin-status__service-metrics { margin-top: 8px; }
+html[data-admin-console="off"] #app #page-admin :is(.admin-status__service-metrics, .admin-status__rows) > div {
+  gap: 8px;
+  padding: 6px 0;
+  line-height: 1.3;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__section h3 { margin-bottom: 4px; }
+html[data-admin-console="off"] #app #page-admin .admin-status__release { min-height: 32px; margin-top: 9px; }
+html[data-admin-console="off"] #app #page-admin .admin-bot-update { margin-top: 9px; }
+html[data-admin-console="off"] #app #page-admin .admin-bot-update .admin-bot-update__start { min-height: 36px; }
+html[data-admin-console="off"] #app #page-admin .admin-status__badge,
+html[data-admin-console="off"] #app #page-admin .admin-status__inline-state {
+  --status-signal: var(--success);
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__service.is-offline .admin-status__badge,
+html[data-admin-console="off"] #app #page-admin .admin-status__inline-state.is-offline { --status-signal: var(--danger); }
+html[data-admin-console="off"] #app #page-admin .admin-status__service.is-unknown .admin-status__badge,
+html[data-admin-console="off"] #app #page-admin .admin-status__inline-state.is-unknown { --status-signal: var(--muted); }
+html[data-admin-console="off"] #app #page-admin :is(.admin-status__overview > i, .admin-status__badge i, .admin-status__inline-state i) {
+  position: relative;
+  display: block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--status-signal);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-signal) 13%, transparent), 0 0 11px 2px color-mix(in srgb, var(--status-signal) 75%, transparent);
+  animation: admin-status-beacon 2.2s ease-in-out infinite;
+}
+html[data-admin-console="off"] #app #page-admin :is(.admin-status__overview > i, .admin-status__badge i, .admin-status__inline-state i)::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid color-mix(in srgb, var(--status-signal) 50%, transparent);
+  border-radius: 50%;
+  animation: admin-status-ring 2.2s ease-out infinite;
+}
+html[data-admin-console="off"] #app #page-admin .admin-status__db-value { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+html[data-admin-console="off"] #app #page-admin .admin-status__inline-state { width: 18px; height: 18px; }
+html[data-admin-console="off"] #app #page-admin :is(.admin-status__service.is-unknown .admin-status__badge i, .admin-status__inline-state.is-unknown i) { animation: none; }
+html[data-admin-console="off"] #app #page-admin :is(.admin-status__service.is-unknown .admin-status__badge i, .admin-status__inline-state.is-unknown i)::after { display: none; }
+@keyframes admin-status-beacon {
+  50% { opacity: .65; box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-signal) 9%, transparent), 0 0 6px 1px color-mix(in srgb, var(--status-signal) 55%, transparent); }
+}
+@keyframes admin-status-ring {
+  0% { opacity: .7; transform: scale(.55); }
+  75%, 100% { opacity: 0; transform: scale(1.25); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-admin-console="off"] #app #page-admin :is(.admin-status__overview > i, .admin-status__badge i, .admin-status__inline-state i),
+  html[data-admin-console="off"] #app #page-admin :is(.admin-status__overview > i, .admin-status__badge i, .admin-status__inline-state i)::after { animation: none; }
+}
+
+html[data-admin-console="off"] #app #page-admin .admin-localization .admin-editor__grid { gap: 8px; }
+html[data-admin-console="off"] #app #page-admin .admin-localization .admin-field { gap: 4px; margin-bottom: 0; }
+
+html[data-admin-console="off"] #app #page-admin .admin-moynalog__metrics {
+  gap: 7px;
+  overflow: visible;
+  border: 0;
+}
+html[data-admin-console="off"] #app #page-admin .admin-moynalog__metrics > div {
+  min-height: 64px;
+  padding: 8px 10px;
+  place-content: center start;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--admin-card-radius);
+  background: var(--surface);
+  box-shadow: var(--glass-shadow-soft);
+  text-align: left;
+}
+html[data-admin-console="off"] #app #page-admin .admin-moynalog__metrics > div + div { border-inline-start: 1px solid var(--line); }
+html[data-admin-console="off"] #app #page-admin .admin-moynalog__metrics strong { font-size: 21px; }
+html[data-admin-console="off"] #app #page-admin .admin-moynalog__metrics span {
+  overflow: visible;
+  font-size: 9px;
+  line-height: 1.15;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+html[data-admin-console="off"] #app #page-admin .admin-pinned-message__preview {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--admin-card-radius);
+  background: var(--control-bg);
+  box-shadow: var(--glass-shadow-soft);
+}
+
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--admin-card-radius);
+  background: var(--surface);
+  interpolate-size: allow-keywords;
+}
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary {
+  min-height: 40px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: var(--admin-card-radius);
+  background: transparent;
+  color: var(--text);
+  list-style: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary::marker { content: ""; }
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary::-webkit-details-marker { display: none; }
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary strong { flex: 1; }
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary > span:empty { display: none; }
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary > span::after { content: none; }
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-left: auto;
+  color: var(--icon-color);
+  transition: transform .26s ease;
+}
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details[open] > summary > svg { transform: rotate(180deg); }
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details::details-content {
+  block-size: 0;
+  opacity: 0;
+  overflow: clip;
+  transition: block-size .28s ease, opacity .2s ease, content-visibility .28s allow-discrete;
+}
+html[data-admin-console="off"] #app #page-admin .admin-content-panel details[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-admin-console="off"] #app #page-admin .admin-content-panel details > summary > svg,
+  html[data-admin-console="off"] #app #page-admin .admin-content-panel details::details-content { transition: none; }
+}
+
+html[data-admin-console="off"] #app #page-admin .appearance-theme > .admin-appearance-presets {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  interpolate-size: allow-keywords;
+}
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets > summary {
+  min-height: 42px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  list-style: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets > summary::-webkit-details-marker { display: none; }
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets > summary strong { color: var(--text); font-size: 11px; }
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets > summary svg {
+  width: 16px;
+  height: 16px;
+  color: var(--icon-color);
+  transition: transform .26s ease;
+}
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets[open] > summary svg { transform: rotate(180deg); }
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets .admin-preset-grid { padding: 2px 10px 10px; }
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets::details-content {
+  block-size: 0;
+  opacity: 0;
+  overflow: clip;
+  transition: block-size .28s ease, opacity .2s ease, content-visibility .28s allow-discrete;
+}
+html[data-admin-console="off"] #app #page-admin .admin-appearance-presets[open]::details-content { block-size: auto; opacity: 1; }
+
+html[data-admin-console="off"] #app #page-admin .admin-nav-option {
+  min-height: 0;
+  padding: 9px 7px 8px;
+  gap: 7px;
+  border-radius: var(--admin-card-radius);
+}
+html[data-admin-console="off"] #app #page-admin .admin-nav-option > strong { font-size: 10px; }
+html[data-admin-console="off"] #app #page-admin .admin-nav-preview { height: 38px; padding: 3px; }
+html[data-admin-console="off"] #app #page-admin .admin-nav-preview .bottom-nav__item { height: 30px; }
+html[data-admin-console="off"] #app #page-admin .admin-nav-preview .bottom-nav__icon svg { width: 13px; height: 13px; }
+html[data-admin-console="off"] #app #page-admin .admin-nav-preview[data-nav-style="notch"] .bottom-nav__indicator { width: 28px; height: 28px; }
+html[data-admin-console="off"] #app #page-admin .admin-nav-preview[data-nav-style="capsule"] .bottom-nav__indicator { width: 26px; height: 28px; }
+
+html[data-admin-console="off"] #app #page-admin .admin-background-option {
+  min-height: 0;
+  grid-template-rows: auto 1fr;
+}
+html[data-admin-console="off"] #app #page-admin .admin-background-option__preview {
+  aspect-ratio: 390 / 180;
+  background: var(--bg);
+}
+html[data-admin-console="off"] #app #page-admin .admin-background-stage {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 390px;
+  height: 180px;
+  overflow: hidden;
+  transform: translateY(var(--preview-shift, 0px)) scale(var(--preview-scale, .4));
+  transform-origin: 0 0;
+  background: var(--bg);
+  pointer-events: none;
+}
+html[data-admin-console="off"] #app #page-admin .admin-background-stage[data-background-preview-stage="animated"] { background: var(--wave-background); }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage[data-background-preview-stage="grid"] { background: var(--grid-background); }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage[data-background-preview-stage="grid2"] { background: var(--grid2-background); }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage[data-background-preview-stage="blocks"] { background: var(--blocks-background); }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage[data-background-preview-stage="morphic"] { background: var(--morphic-background); }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage[data-background-preview-stage="twinkle"] { background: var(--twinkle-background); }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage > :is(.bg-media__canvas, .bg-media__scrim, .bg-media__grid, .bg-media__grid2, .bg-media__blocks, .bg-media__morphic, .bg-media__twinkle, .bg-media__video) { display: block !important; }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage .bg-media__grid,
+html[data-admin-console="off"] #app #page-admin .admin-background-stage .bg-media__grid2,
+html[data-admin-console="off"] #app #page-admin .admin-background-stage .bg-media__morphic,
+html[data-admin-console="off"] #app #page-admin .admin-background-stage .bg-media__twinkle { contain: paint; }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage .bg-media__shade { position: absolute; inset: 0; }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage__custom { position: absolute; inset: 0; }
+html[data-admin-console="off"] #app #page-admin .admin-background-stage .bg-media__video { width: 100%; height: 100%; object-fit: cover; }
+html[data-admin-console="off"] #app #page-admin .admin-background-settings__sample { display: block; }
+@media (prefers-reduced-motion: reduce) {
+  html[data-admin-console="off"] #app #page-admin .admin-appearance-presets > summary svg,
+  html[data-admin-console="off"] #app #page-admin .admin-appearance-presets::details-content { transition: none; }
+}
+
+/* User detail in the regular Mini App admin. */
+html[data-admin-console="off"] #app #page-admin .admin-user-metrics {
+  gap: 7px;
+  overflow: visible;
+  border: 0;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-metrics > div {
+  min-height: 64px;
+  padding: 9px 7px;
+  place-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--admin-card-radius);
+  background: var(--surface);
+  box-shadow: var(--glass-shadow-soft);
+  text-align: center;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-metrics > div + div { border-inline-start: 1px solid var(--line); }
+html[data-admin-console="off"] #app #page-admin .admin-user-metrics strong { font-size: 15px; line-height: 1.1; }
+html[data-admin-console="off"] #app #page-admin .admin-user-metrics span { font-size: 8px; line-height: 1.15; }
+
+html[data-admin-console="off"] #app #page-admin .admin-user-subscriptions__tabs {
+  display: grid;
+  grid-template-columns: repeat(var(--subscription-count, 1), minmax(0, 1fr));
+  gap: 7px;
+  overflow: visible;
+  padding: 0;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-subscriptions__tab {
+  min-width: 0;
+  max-width: none;
+  min-height: 56px;
+  padding: 9px 10px;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-subscriptions__tab strong { font-size: 10px; }
+
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--admin-card-radius);
+  background: var(--surface);
+  box-shadow: var(--glass-shadow-soft);
+  interpolate-size: allow-keywords;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription.is-disabled { opacity: .58; }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 54px;
+  padding: 11px 12px;
+  list-style: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary::-webkit-details-marker { display: none; }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary > div { min-width: 0; display: grid; gap: 3px; }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary strong { color: var(--text); font-size: 11px; }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--icon-color); transition: transform .28s ease; }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription[open] > summary svg { transform: rotate(180deg); }
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription::details-content {
+  block-size: 0;
+  opacity: 0;
+  overflow: clip;
+  transition: block-size .28s ease, opacity .2s ease, content-visibility .28s allow-discrete;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription[open]::details-content { block-size: auto; opacity: 1; }
+
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete {
+  position: relative;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--line));
+  border-radius: var(--admin-card-radius);
+  background: color-mix(in srgb, var(--danger) 5%, var(--control-bg));
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete input {
+  position: absolute;
+  inset-inline-end: 17px;
+  top: 50%;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  opacity: 0;
+  pointer-events: none;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete i {
+  width: 36px;
+  height: 21px;
+  flex: 0 0 36px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete i::after {
+  content: "";
+  display: block;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform .2s ease, background .2s ease;
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 3px; }
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete input:checked + i {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-block-delete input:checked + i::after {
+  transform: translateX(15px);
+  background: var(--danger);
+}
+html[data-admin-console="off"] #app #page-admin .admin-user-activity .user-activity-icon { color: var(--icon-color); cursor: pointer; }
+html[data-admin-console="off"] #app #page-admin .admin-user-activity .user-activity-icon:hover { background: var(--surface-strong); }
+html[data-admin-console="off"] #app #page-admin .admin-user-activity .user-activity-icon svg { width: 17px; height: 17px; }
+@media (prefers-reduced-motion: reduce) {
+  html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription > summary svg,
+  html[data-admin-console="off"] #app #page-admin .admin-user-controls__subscription::details-content,
+  html[data-admin-console="off"] #app #page-admin .admin-user-block-delete i::after { transition: none; }
+}

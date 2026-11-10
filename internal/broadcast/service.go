@@ -1,0 +1,930 @@
+package broadcast
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+	"golang.org/x/net/html"
+
+	"link-bot/internal/config"
+	"link-bot/internal/database"
+	"link-bot/utils"
+)
+
+const (
+	maxButtons     = 8
+	maxWorkers     = 16
+	retryDelay     = 1500 * time.Millisecond
+	progressStride = 25
+)
+
+var (
+	ErrRunning              = errors.New("broadcast is already running")
+	ErrDraftChanged         = errors.New("broadcast draft changed")
+	ErrNoMessage            = errors.New("broadcast message is not selected")
+	ErrInvalidButton        = errors.New("invalid broadcast button")
+	ErrInvalidHTML          = errors.New("invalid broadcast HTML")
+	ErrSurveyCapturePending = errors.New("Сначала завершите или отмените ввод сообщения опроса")
+
+	customEmojiTagPattern = regexp.MustCompile(`(?is)<tg-emoji\s+emoji-id\s*=\s*["']([0-9]{5,32})["'][^>]*>.*?</tg-emoji>`)
+	customEmojiIDPattern  = regexp.MustCompile(`^[0-9]{5,32}$`)
+	broadcastHTMLPattern  = regexp.MustCompile(`(?i)<\s*/?\s*(?:b|strong|i|em|u|ins|s|strike|del|a|code|pre|blockquote|tg-spoiler|tg-emoji|span)(?:\s|/?>)`)
+)
+
+type Service struct {
+	replies            autoReplyStore
+	deletions          deletionStore
+	repository         *database.BroadcastRepository
+	customerRepository *database.CustomerRepository
+	promoRepository    *database.PromoCodeRepository
+	telegramBot        *bot.Bot
+	sendMu             sync.Mutex
+	audienceResolver   func(context.Context, database.BroadcastAudience) ([]int64, error)
+	pinnedRepository   *database.PinnedMessageRepository
+	pinnedWake         chan struct{}
+	pinnedCursor       int64
+	pinnedRevision     int64
+}
+
+func NewService(repository *database.BroadcastRepository, customerRepository *database.CustomerRepository, promoRepository *database.PromoCodeRepository, telegramBot *bot.Bot) *Service {
+	service := &Service{repository: repository, customerRepository: customerRepository, promoRepository: promoRepository, telegramBot: telegramBot}
+	if repository != nil {
+		service.deletions = repository
+		service.replies = repository
+	}
+	return service
+}
+
+func (s *Service) SetAudienceResolver(resolve func(context.Context, database.BroadcastAudience) ([]int64, error)) {
+	s.audienceResolver = resolve
+}
+
+func (s *Service) SaveAudience(ctx context.Context, adminID int64, a database.BroadcastAudience) (*database.BroadcastDraft, error) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if err := a.Normalize(); err != nil {
+		return nil, err
+	}
+	return s.repository.SaveAudience(ctx, a, adminID)
+}
+
+func (s *Service) RecoverInterrupted(ctx context.Context) error {
+	if s == nil || s.repository == nil {
+		return nil
+	}
+	if err := s.repository.RecoverInterrupted(ctx); err != nil {
+		return err
+	}
+	return s.repository.RecoverDirectSend(ctx)
+}
+
+func (s *Service) Get(ctx context.Context) (*database.BroadcastDraft, error) {
+	if s == nil || s.repository == nil {
+		return nil, errors.New("broadcast service is unavailable")
+	}
+	draft, err := s.repository.Get(ctx)
+	if err != nil || draft == nil {
+		return draft, err
+	}
+	draft.Survey, err = s.repository.SurveyDraft(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if draft.Survey.Enabled {
+		hydrateSurveyInvitation(draft.Survey, draft)
+		if draft.Survey.FinalButtons == nil {
+			draft.Survey.FinalButtons = append([]database.BroadcastButton{}, draft.Buttons...)
+		}
+	}
+	if s.replies != nil {
+		draft.AutoReply, err = s.replies.AutoReplySettings(ctx)
+	}
+	return draft, err
+}
+
+func (s *Service) StartCapture(ctx context.Context, adminID int64) (*database.BroadcastDraft, error) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if err := s.checkSurveyCapture(ctx, 0); err != nil {
+		return nil, err
+	}
+	if err := s.checkPinnedCapture(ctx, adminID); err != nil {
+		return nil, err
+	}
+	direct, err := s.repository.GetDirect(ctx, adminID)
+	if err != nil {
+		return nil, err
+	}
+	if direct != nil && direct.Status == "awaiting_message" {
+		return nil, ErrRunning
+	}
+	draft, err := s.repository.StartCapture(ctx, adminID)
+	if err != nil {
+		return nil, normalizeRepositoryStateError(err)
+	}
+	if draft == nil {
+		return nil, ErrRunning
+	}
+	if s.telegramBot != nil {
+		_, sendErr := s.telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:    adminID,
+			Text:      "<b>Новое сообщение для рассылки</b>\n\nОтправьте текст, фото, видео, аудио или файл. Можно вставить сырой Telegram HTML — например, <code>&lt;b&gt;текст&lt;/b&gt;</code>. Форматирование, ссылки и premium emoji сохранятся.",
+			ParseMode: models.ParseModeHTML,
+			ReplyMarkup: &models.ForceReply{
+				ForceReply:            true,
+				InputFieldPlaceholder: "Сообщение для рассылки",
+				Selective:             true,
+			},
+		})
+		if sendErr != nil {
+			_, _ = s.repository.Reset(ctx, adminID)
+			return nil, fmt.Errorf("send capture prompt: %w", sendErr)
+		}
+	}
+	return draft, nil
+}
+
+func (s *Service) CaptureMessage(ctx context.Context, message *models.Message) (bool, error) {
+	if s == nil || s.repository == nil || message == nil || message.From == nil {
+		return false, nil
+	}
+	if captured, err := s.CaptureSurveyMessage(ctx, message); captured || err != nil {
+		return captured, err
+	}
+	draft, err := s.repository.Get(ctx)
+	if err != nil || draft == nil || draft.Status != database.BroadcastStatusAwaitingMessage {
+		return false, err
+	}
+	if !canCaptureBroadcastSource(draft, message) {
+		return false, nil
+	}
+	rawText := strings.TrimSpace(message.Text)
+	if rawText == "" {
+		rawText = strings.TrimSpace(message.Caption)
+	}
+	if strings.HasPrefix(rawText, "/") {
+		return false, nil
+	}
+
+	kind := messageKind(message)
+	sourceHTML := ""
+	if kind == "text" && looksLikeBroadcastHTML(message.Text) {
+		if err := ValidateHTML(message.Text); err != nil {
+			details := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrInvalidHTML.Error()+":"))
+			_, _ = s.telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: message.Chat.ID,
+				Text:   "HTML не сохранён: " + details + ". Исправьте разметку и отправьте сообщение ещё раз.",
+			})
+			return true, nil
+		}
+		kind = "html"
+		sourceHTML = strings.TrimSpace(message.Text)
+	}
+	if kind == "" {
+		_, _ = s.telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: message.Chat.ID,
+			Text:   "Этот тип сообщения нельзя использовать в рассылке. Отправьте текст, HTML-текст, фото, видео, аудио или файл.",
+		})
+		return true, nil
+	}
+	preview := messagePreview(message, kind)
+	// Non-HTML delivery still copies the original Telegram message. Retain its
+	// complete text/caption for the web preview rather than the 180-character summary.
+	if kind != "html" {
+		sourceHTML = message.Text
+		if sourceHTML == "" {
+			sourceHTML = message.Caption
+		}
+	}
+	draft, err = s.repository.SaveSource(ctx, message.Chat.ID, message.ID, kind, preview, sourceHTML, message.From.ID)
+	if err != nil {
+		return true, err
+	}
+	if draft == nil {
+		return true, errors.New("broadcast capture is no longer active")
+	}
+	s.recordCapturedActivity(ctx, message, kind, 0)
+
+	replyMarkup := models.ReplyMarkup(nil)
+	if miniAppURL := adminBroadcastURL(); miniAppURL != "" {
+		replyMarkup = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{
+			Text:   "Открыть редактор рассылки",
+			WebApp: &models.WebAppInfo{URL: miniAppURL},
+		}}}}
+	}
+	_, _ = s.telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      message.Chat.ID,
+		Text:        "<b>Сообщение сохранено</b>\n\nТеперь добавьте кнопки, отправьте предпросмотр и запустите рассылку из админки.",
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: replyMarkup,
+	})
+	return true, nil
+}
+
+func canCaptureBroadcastSource(draft *database.BroadcastDraft, message *models.Message) bool {
+	return draft != nil && draft.Status == database.BroadcastStatusAwaitingMessage && draft.UpdatedBy != nil &&
+		message != nil && message.From != nil && message.Chat.ID == message.From.ID && *draft.UpdatedBy == message.From.ID
+}
+
+func (s *Service) SaveButtons(ctx context.Context, adminID int64, buttons []database.BroadcastButton) (*database.BroadcastDraft, error) {
+	clean, err := ValidateButtons(buttons)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validatePromoButtons(ctx, clean); err != nil {
+		return nil, err
+	}
+	draft, err := s.repository.SaveButtons(ctx, clean, adminID)
+	if err != nil {
+		return nil, normalizeRepositoryStateError(err)
+	}
+	if draft == nil {
+		return nil, ErrRunning
+	}
+	return draft, nil
+}
+
+func (s *Service) validatePromoButtons(ctx context.Context, buttons []database.BroadcastButton) error {
+	for _, item := range buttons {
+		if item.Type != "promo" {
+			continue
+		}
+		if s.promoRepository == nil {
+			return fmt.Errorf("%w: promo code validation is unavailable", ErrInvalidButton)
+		}
+		promo, err := s.promoRepository.FindByCode(ctx, item.PromoCode)
+		if err != nil {
+			return err
+		}
+		if promo == nil || !promo.IsActive || (promo.ExpiresAt != nil && !promo.ExpiresAt.After(time.Now())) ||
+			(promo.MaxRedemptions != nil && promo.RedemptionCount >= *promo.MaxRedemptions) {
+			return fmt.Errorf("%w: promo code %s is unavailable", ErrInvalidButton, item.PromoCode)
+		}
+	}
+	return nil
+}
+
+func (s *Service) Preview(ctx context.Context, adminID int64) (*database.BroadcastDraft, error) {
+	draft, err := s.repository.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if draft == nil {
+		return nil, ErrNoMessage
+	}
+	savedDraft := *draft
+	if err = s.loadSurvey(ctx, draft); err != nil {
+		return nil, err
+	}
+	if !draft.HasSource() {
+		return nil, ErrNoMessage
+	}
+	if draft.Survey.Enabled {
+		id, err := s.repository.CreateSurveyRun(ctx, *draft.Survey, draft.Buttons, true)
+		if err != nil {
+			return nil, err
+		}
+		previewDraft := *draft
+		previewDraft.SurveyRunID = id
+		previewDraft.DeleteAfterMinutes = 0
+		if err = s.deliverBroadcast(ctx, previewDraft, adminID, surveyIntroKeyboard(id, draft.Survey)); err != nil {
+			return nil, err
+		}
+		savedDraft.Survey = draft.Survey
+		return &savedDraft, nil
+	}
+	if draft.SourceKind == "html" {
+		if _, err := s.telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: adminID, Text: draft.SourceHTML, ParseMode: models.ParseModeHTML, ReplyMarkup: buildKeyboard(draft.Buttons),
+		}); err != nil {
+			return nil, fmt.Errorf("send HTML preview: %w", err)
+		}
+		return draft, nil
+	}
+	if _, err := s.telegramBot.CopyMessage(ctx, &bot.CopyMessageParams{
+		ChatID:      adminID,
+		FromChatID:  *draft.SourceChatID,
+		MessageID:   *draft.SourceMessageID,
+		ReplyMarkup: buildKeyboard(draft.Buttons),
+	}); err != nil {
+		return nil, fmt.Errorf("copy preview: %w", err)
+	}
+	return draft, nil
+}
+
+func (s *Service) Start(ctx context.Context, adminID int64, expected ...time.Time) (*database.BroadcastDraft, error) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+
+	draft, err := s.repository.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if draft == nil {
+		return nil, ErrNoMessage
+	}
+	if draft.Status == database.BroadcastStatusRunning {
+		return nil, ErrRunning
+	}
+	if err := database.ValidateBroadcastExpiration(draft.DeleteAfterMinutes); err != nil {
+		return nil, err
+	}
+	if len(expected) > 0 && !expected[0].IsZero() && !draft.UpdatedAt.Equal(expected[0]) {
+		return nil, ErrDraftChanged
+	}
+	if err = s.loadSurvey(ctx, draft); err != nil {
+		return nil, err
+	}
+	if !draft.HasSource() {
+		return nil, ErrNoMessage
+	}
+	survey := draft.Survey
+	var targetIDs []int64
+	if s.audienceResolver != nil {
+		targetIDs, err = s.audienceResolver(ctx, draft.Audience)
+	} else if draft.Audience.Category == "" || draft.Audience.Category == "all" && len(draft.Audience.InternalSquads) == 0 && len(draft.Audience.ExternalSquads) == 0 && draft.Audience.Tag == "" && draft.Audience.Language == "" {
+		targetIDs, err = s.customerRepository.ListAllTelegramIDs(ctx, draft.Audience.IgnoreUnsubscribe)
+	} else {
+		return nil, errors.New("audience resolver is unavailable")
+	}
+	if err != nil {
+		return nil, err
+	}
+	targets := uniqueTargets(targetIDs, adminID)
+	if len(targets) == 0 {
+		return nil, errors.New("broadcast recipient list is empty")
+	}
+	draft, err = s.repository.BeginSend(ctx, len(targets), adminID, draft.UpdatedAt, survey.Enabled)
+	if err != nil {
+		return nil, normalizeRepositoryStateError(err)
+	}
+	if draft == nil {
+		return nil, ErrRunning
+	}
+
+	draft.Survey = survey
+	responseDraft := *draft
+	if survey.Enabled {
+		applySurveyInvitation(draft, survey)
+		id, runErr := s.repository.CreateSurveyRun(ctx, *survey, draft.Buttons, false)
+		if runErr != nil {
+			_ = s.repository.Finish(ctx, database.BroadcastStatusFailed, 0, 0, "Не удалось создать опрос")
+			return nil, runErr
+		}
+		draft.SurveyRunID = id
+	}
+	startedDraft := *draft
+	startedDraft.Buttons = append([]database.BroadcastButton(nil), draft.Buttons...)
+	go s.run(startedDraft, targets, adminID)
+	return &responseDraft, nil
+}
+
+func (s *Service) Reset(ctx context.Context, adminID int64) (*database.BroadcastDraft, error) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	draft, err := s.repository.Reset(ctx, adminID)
+	if err != nil {
+		return nil, normalizeRepositoryStateError(err)
+	}
+	if draft == nil {
+		return nil, ErrRunning
+	}
+	result, err := s.repository.SaveSurvey(ctx, database.SurveyConfig{}, adminID, draft.UpdatedAt)
+	if err == nil && result == nil {
+		return nil, ErrDraftChanged
+	}
+	return result, err
+}
+
+func (s *Service) run(draft database.BroadcastDraft, targets []int64, adminID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	_, _ = s.telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:    adminID,
+		Text:      fmt.Sprintf("<b>Рассылка запущена</b>\n\nПолучателей: <b>%d</b>\nПрогресс доступен в админке.", len(targets)),
+		ParseMode: models.ParseModeHTML,
+	})
+
+	var sent atomic.Int64
+	var failed atomic.Int64
+	var skipped atomic.Int64
+	var processed atomic.Int64
+	var lastError atomic.Value
+	jobs := make(chan int64)
+	workerCount := maxWorkersFor(len(targets))
+	var wg sync.WaitGroup
+	keyboard := buildKeyboard(draft.Buttons)
+	if draft.SurveyRunID != "" {
+		keyboard = surveyIntroKeyboard(draft.SurveyRunID, draft.Survey)
+	}
+	// Stay below Telegram's global bot limit while using the available throughput.
+	throttle := time.NewTicker(34 * time.Millisecond)
+	defer throttle.Stop()
+
+	for index := 0; index < workerCount; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for chatID := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				case <-throttle.C:
+				}
+				err := s.copyTo(ctx, draft, chatID, keyboard)
+				if err != nil && shouldRetry(err) {
+					time.Sleep(retryDelay)
+					err = s.copyTo(ctx, draft, chatID, keyboard)
+				}
+				if errors.Is(err, database.ErrBroadcastUnsubscribed) {
+					skipped.Add(1)
+				} else if err != nil {
+					failed.Add(1)
+					lastError.Store(shortError(err))
+					slog.Warn("broadcast delivery failed", "telegramId", utils.MaskHalfInt64(chatID), "error", err)
+				} else {
+					sent.Add(1)
+				}
+				current := processed.Add(1)
+				if current%progressStride == 0 || int(current) == len(targets) {
+					_ = s.repository.UpdateProgress(ctx, int(sent.Load()), int(failed.Load()), loadAtomicString(&lastError))
+				}
+			}
+		}()
+	}
+
+sendLoop:
+	for _, chatID := range targets {
+		select {
+		case <-ctx.Done():
+			break sendLoop
+		case jobs <- chatID:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	status := database.BroadcastStatusFinished
+	last := loadAtomicString(&lastError)
+	if ctx.Err() != nil {
+		status = database.BroadcastStatusFailed
+		last = "Рассылка остановлена по таймауту"
+	}
+	if err := s.repository.Finish(context.Background(), status, int(sent.Load()), int(failed.Load()), last, int(skipped.Load())); err != nil {
+		slog.Error("broadcast final status save failed", "error", err)
+	}
+	_, _ = s.telegramBot.SendMessage(context.Background(), &bot.SendMessageParams{
+		ChatID: adminID,
+		Text: fmt.Sprintf(
+			"<b>Рассылка завершена</b>\n\nПолучателей: <b>%d</b>\nУспешно: <b>%d</b>\nОшибок: <b>%d</b>\nПропущено после отписки или блокировки: <b>%d</b>",
+			len(targets)-int(skipped.Load()), sent.Load(), failed.Load(), skipped.Load(),
+		),
+		ParseMode: models.ParseModeHTML,
+	})
+}
+
+func (s *Service) copyTo(ctx context.Context, draft database.BroadcastDraft, chatID int64, keyboard models.ReplyMarkup) error {
+	allowed, err := s.customerRepository.BroadcastTelegramAllowed(ctx, chatID, draft.Audience.IgnoreUnsubscribe)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return database.ErrBroadcastUnsubscribed
+	}
+	return s.deliverBroadcast(ctx, draft, chatID, keyboard)
+}
+
+func ValidateButtons(buttons []database.BroadcastButton) ([]database.BroadcastButton, error) {
+	if len(buttons) > maxButtons {
+		return nil, fmt.Errorf("%w: maximum %d buttons", ErrInvalidButton, maxButtons)
+	}
+	clean := make([]database.BroadcastButton, 0, len(buttons))
+	seen := make(map[string]bool, len(buttons))
+	for index, item := range buttons {
+		item.ID = strings.TrimSpace(item.ID)
+		if item.ID == "" {
+			item.ID = fmt.Sprintf("button_%d", index+1)
+		}
+		if seen[item.ID] {
+			return nil, fmt.Errorf("%w: duplicate button id", ErrInvalidButton)
+		}
+		seen[item.ID] = true
+		normalizedText, normalizedEmojiID, err := normalizeButtonEmoji(item.Text, item.IconCustomEmojiID)
+		if err != nil {
+			return nil, err
+		}
+		item.Text = normalizedText
+		item.IconCustomEmojiID = normalizedEmojiID
+		if len([]rune(item.Text)) < 1 || len([]rune(item.Text)) > 64 {
+			return nil, fmt.Errorf("%w: button text must contain 1-64 characters", ErrInvalidButton)
+		}
+		item.Style = strings.ToLower(strings.TrimSpace(item.Style))
+		switch item.Style {
+		case "", "primary", "success", "danger":
+		default:
+			return nil, fmt.Errorf("%w: unsupported button style", ErrInvalidButton)
+		}
+		item.Type = strings.ToLower(strings.TrimSpace(item.Type))
+		switch item.Type {
+		case "url":
+			parsed, err := url.Parse(strings.TrimSpace(item.URL))
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+				return nil, fmt.Errorf("%w: button URL must use HTTPS", ErrInvalidButton)
+			}
+			item.URL = parsed.String()
+			item.PromoCode = ""
+		case "promo":
+			item.PromoCode = database.NormalizePromoCode(item.PromoCode)
+			if !database.IsValidPromoCode(item.PromoCode) {
+				return nil, fmt.Errorf("%w: invalid promo code", ErrInvalidButton)
+			}
+			item.URL = ""
+		case "main", "reviews", "referrals", "login_methods", "support", "devices":
+			item.URL = ""
+			item.PromoCode = ""
+		default:
+			return nil, fmt.Errorf("%w: unsupported button type", ErrInvalidButton)
+		}
+		clean = append(clean, item)
+	}
+	return clean, nil
+}
+
+func normalizeButtonEmoji(text, configuredID string) (string, string, error) {
+	text = strings.TrimSpace(text)
+	configuredID = strings.TrimSpace(configuredID)
+
+	configuredMatches := customEmojiTagPattern.FindAllStringSubmatch(configuredID, -1)
+	if len(configuredMatches) > 1 {
+		return "", "", fmt.Errorf("%w: only one premium emoji is allowed per button", ErrInvalidButton)
+	}
+	if len(configuredMatches) == 1 {
+		configuredID = configuredMatches[0][1]
+	}
+
+	textMatches := customEmojiTagPattern.FindAllStringSubmatch(text, -1)
+	if len(textMatches) > 1 {
+		return "", "", fmt.Errorf("%w: only one premium emoji is allowed per button", ErrInvalidButton)
+	}
+	if len(textMatches) == 1 {
+		configuredID = textMatches[0][1]
+		text = strings.TrimSpace(customEmojiTagPattern.ReplaceAllString(text, ""))
+	}
+
+	if configuredID != "" && !customEmojiIDPattern.MatchString(configuredID) {
+		return "", "", fmt.Errorf("%w: invalid premium emoji ID", ErrInvalidButton)
+	}
+	return text, configuredID, nil
+}
+
+func buildKeyboard(buttons []database.BroadcastButton) models.ReplyMarkup {
+	if len(buttons) == 0 {
+		return nil
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, len(buttons))
+	for _, item := range buttons {
+		button := models.InlineKeyboardButton{
+			Text:              item.Text,
+			IconCustomEmojiID: item.IconCustomEmojiID,
+			Style:             item.Style,
+		}
+		switch item.Type {
+		case "promo":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("buy", map[string]string{"promo": database.NormalizePromoCode(item.PromoCode)})}
+		case "main":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("dashboard", nil)}
+		case "reviews":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("reviews", nil)}
+		case "referrals":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("referrals", nil)}
+		case "login_methods":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("login-methods", nil)}
+		case "support":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("support", nil)}
+		case "devices":
+			button.WebApp = &models.WebAppInfo{URL: miniAppPageURL("buy", map[string]string{"devicePack": "1"})}
+		default:
+			button.URL = item.URL
+		}
+		rows = append(rows, []models.InlineKeyboardButton{button})
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// BuildKeyboard exposes the same validated Telegram button rendering used by
+// broadcasts to other message flows, such as subscription gifts.
+func BuildKeyboard(buttons []database.BroadcastButton) models.ReplyMarkup {
+	return buildKeyboard(buttons)
+}
+
+func promoMiniAppURL(code string) string {
+	return miniAppPageURL("buy", map[string]string{"promo": database.NormalizePromoCode(code)})
+}
+
+func miniAppPageURL(page string, values map[string]string) string {
+	base := strings.TrimSpace(config.GetMiniAppURL())
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return base
+	}
+	query := parsed.Query()
+	if strings.TrimSpace(page) != "" {
+		query.Set("page", strings.TrimSpace(page))
+	}
+	for key, value := range values {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			query.Set(key, value)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func adminBroadcastURL() string {
+	base := strings.TrimSpace(config.GetMiniAppURL())
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return base
+	}
+	query := parsed.Query()
+	query.Set("page", "admin")
+	query.Set("admin", "broadcast")
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func looksLikeBroadcastHTML(value string) bool {
+	return broadcastHTMLPattern.MatchString(value)
+}
+
+// ValidateHTML checks the Telegram HTML subset before a draft is stored. The
+// Telegram API performs the final validation again when the admin previews it.
+func ValidateHTML(value string, allowPlain ...bool) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%w: текст пуст", ErrInvalidHTML)
+	}
+	if len([]rune(value)) > 16000 {
+		return fmt.Errorf("%w: исходный текст слишком длинный", ErrInvalidHTML)
+	}
+
+	allowed := map[string]bool{
+		"b": true, "strong": true, "i": true, "em": true, "u": true, "ins": true,
+		"s": true, "strike": true, "del": true, "a": true, "code": true, "pre": true,
+		"blockquote": true, "tg-spoiler": true, "tg-emoji": true, "span": true,
+	}
+	tokenizer := html.NewTokenizer(strings.NewReader(value))
+	stack := make([]string, 0, 8)
+	var visible strings.Builder
+	hasTag := false
+	for {
+		switch tokenizer.Next() {
+		case html.ErrorToken:
+			if err := tokenizer.Err(); err != nil && !errors.Is(err, io.EOF) {
+				return fmt.Errorf("%w: разметку не удалось прочитать", ErrInvalidHTML)
+			}
+			if len(stack) != 0 {
+				return fmt.Errorf("%w: тег <%s> не закрыт", ErrInvalidHTML, stack[len(stack)-1])
+			}
+			if !hasTag && !(len(allowPlain) > 0 && allowPlain[0]) {
+				return fmt.Errorf("%w: поддерживаемые HTML-теги не найдены", ErrInvalidHTML)
+			}
+			if strings.TrimSpace(visible.String()) == "" {
+				return fmt.Errorf("%w: после обработки тегов текст пуст", ErrInvalidHTML)
+			}
+			if len([]rune(visible.String())) > 4096 {
+				return fmt.Errorf("%w: текст длиннее лимита Telegram в 4096 символов", ErrInvalidHTML)
+			}
+			return nil
+		case html.TextToken:
+			visible.WriteString(tokenizer.Token().Data)
+		case html.StartTagToken:
+			token := tokenizer.Token()
+			name := strings.ToLower(token.Data)
+			if !allowed[name] {
+				return fmt.Errorf("%w: тег <%s> не поддерживается Telegram", ErrInvalidHTML, name)
+			}
+			if err := validateHTMLAttributes(name, token.Attr); err != nil {
+				return err
+			}
+			hasTag = true
+			stack = append(stack, name)
+		case html.SelfClosingTagToken:
+			token := tokenizer.Token()
+			return fmt.Errorf("%w: тег <%s> должен иметь закрывающий тег", ErrInvalidHTML, strings.ToLower(token.Data))
+		case html.EndTagToken:
+			name := strings.ToLower(tokenizer.Token().Data)
+			if !allowed[name] {
+				return fmt.Errorf("%w: тег </%s> не поддерживается Telegram", ErrInvalidHTML, name)
+			}
+			if len(stack) == 0 || stack[len(stack)-1] != name {
+				return fmt.Errorf("%w: неверный порядок закрытия тега </%s>", ErrInvalidHTML, name)
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			return fmt.Errorf("%w: служебные HTML-конструкции не поддерживаются", ErrInvalidHTML)
+		}
+	}
+}
+
+func validateHTMLAttributes(name string, attributes []html.Attribute) error {
+	values := make(map[string]string, len(attributes))
+	for _, attribute := range attributes {
+		key := strings.ToLower(strings.TrimSpace(attribute.Key))
+		if key == "" || attribute.Namespace != "" {
+			return fmt.Errorf("%w: некорректный атрибут тега <%s>", ErrInvalidHTML, name)
+		}
+		if _, exists := values[key]; exists {
+			return fmt.Errorf("%w: атрибут %s повторяется", ErrInvalidHTML, key)
+		}
+		values[key] = strings.TrimSpace(attribute.Val)
+	}
+	allowedOnly := func(keys ...string) error {
+		allowed := make(map[string]bool, len(keys))
+		for _, key := range keys {
+			allowed[key] = true
+		}
+		for key := range values {
+			if !allowed[key] {
+				return fmt.Errorf("%w: атрибут %s нельзя использовать в <%s>", ErrInvalidHTML, key, name)
+			}
+		}
+		return nil
+	}
+
+	switch name {
+	case "a":
+		if err := allowedOnly("href"); err != nil {
+			return err
+		}
+		target, err := url.Parse(values["href"])
+		if err != nil || !map[string]bool{"http": true, "https": true, "tg": true, "mailto": true}[strings.ToLower(target.Scheme)] {
+			return fmt.Errorf("%w: ссылка в <a> должна использовать HTTP, HTTPS, tg:// или mailto:", ErrInvalidHTML)
+		}
+	case "code":
+		if err := allowedOnly("class"); err != nil {
+			return err
+		}
+		if class := values["class"]; class != "" && !strings.HasPrefix(class, "language-") {
+			return fmt.Errorf("%w: class тега <code> должен начинаться с language-", ErrInvalidHTML)
+		}
+	case "blockquote":
+		if err := allowedOnly("expandable"); err != nil {
+			return err
+		}
+	case "span":
+		if err := allowedOnly("class"); err != nil {
+			return err
+		}
+		if values["class"] != "tg-spoiler" {
+			return fmt.Errorf("%w: для <span> поддерживается только class=\"tg-spoiler\"", ErrInvalidHTML)
+		}
+	case "tg-emoji":
+		if err := allowedOnly("emoji-id"); err != nil {
+			return err
+		}
+		if !customEmojiIDPattern.MatchString(values["emoji-id"]) {
+			return fmt.Errorf("%w: в <tg-emoji> нужен корректный emoji-id", ErrInvalidHTML)
+		}
+	default:
+		if err := allowedOnly(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func broadcastHTMLText(value string) string {
+	tokenizer := html.NewTokenizer(strings.NewReader(value))
+	var result strings.Builder
+	for {
+		switch tokenizer.Next() {
+		case html.ErrorToken:
+			return result.String()
+		case html.TextToken:
+			result.WriteString(tokenizer.Token().Data)
+		}
+	}
+}
+
+func messageKind(message *models.Message) string {
+	switch {
+	case strings.TrimSpace(message.Text) != "":
+		return "text"
+	case len(message.Photo) > 0:
+		return "photo"
+	case message.Video != nil:
+		return "video"
+	case message.Animation != nil:
+		return "animation"
+	case message.Document != nil:
+		return "document"
+	case message.Audio != nil:
+		return "audio"
+	case message.Voice != nil:
+		return "voice"
+	case message.VideoNote != nil:
+		return "video_note"
+	case message.Sticker != nil:
+		return "sticker"
+	case strings.TrimSpace(message.Caption) != "":
+		return "text"
+	default:
+		return ""
+	}
+}
+
+func messagePreview(message *models.Message, kind string) string {
+	text := strings.TrimSpace(message.Text)
+	if text == "" {
+		text = strings.TrimSpace(message.Caption)
+	}
+	if kind == "html" {
+		text = broadcastHTMLText(text)
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		labels := map[string]string{
+			"photo": "Фото", "video": "Видео", "animation": "Анимация", "document": "Файл",
+			"audio": "Аудио", "voice": "Голосовое сообщение", "video_note": "Видеосообщение", "sticker": "Стикер",
+		}
+		text = labels[kind]
+	}
+	runes := []rune(text)
+	if len(runes) > 180 {
+		return string(runes[:180]) + "..."
+	}
+	return text
+}
+
+func uniqueTargets(ids []int64, adminID int64) []int64 {
+	seen := make(map[int64]bool, len(ids)+1)
+	result := make([]int64, 0, len(ids)+1)
+	for _, id := range append(ids, adminID) {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result
+}
+
+func maxWorkersFor(total int) int {
+	if total < 1 {
+		return 1
+	}
+	if total < maxWorkers {
+		return total
+	}
+	return maxWorkers
+}
+
+func shouldRetry(err error) bool {
+	if err == nil || errors.Is(err, errDeletionRecording) {
+		return false
+	}
+	value := strings.ToLower(err.Error())
+	return strings.Contains(value, "too many requests") || strings.Contains(value, "retry after") ||
+		strings.Contains(value, "timeout") || strings.Contains(value, "connection reset")
+}
+
+func shortError(err error) string {
+	if err == nil {
+		return ""
+	}
+	value := strings.TrimSpace(err.Error())
+	runes := []rune(value)
+	if len(runes) > 240 {
+		return string(runes[:240])
+	}
+	return value
+}
+
+func loadAtomicString(value *atomic.Value) string {
+	if value == nil {
+		return ""
+	}
+	loaded := value.Load()
+	if loaded == nil {
+		return ""
+	}
+	result, _ := loaded.(string)
+	return result
+}
+
+func normalizeRepositoryStateError(err error) error {
+	return err
+}

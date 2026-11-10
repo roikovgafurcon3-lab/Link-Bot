@@ -1,0 +1,3208 @@
+package runtimeconfig
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/url"
+	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
+
+	"github.com/go-telegram/bot"
+	"github.com/google/uuid"
+
+	"link-bot/internal/broadcast"
+	"link-bot/internal/config"
+	"link-bot/internal/database"
+	planbook "link-bot/internal/plans"
+)
+
+const CurrentVersion = 28
+
+var (
+	hexColorPattern       = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	elementIDPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	contentKeyPattern     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,99}$`)
+	telegramUserPattern   = regexp.MustCompile(`^[A-Za-z0-9_]{5,32}$`)
+	customEmojiIDPattern  = regexp.MustCompile(`^[0-9]{5,32}$`)
+	customEmojiTagPattern = regexp.MustCompile(`(?is)<tg-emoji\s+emoji-id=["']([0-9]{5,32})["'][^>]*>.*?</tg-emoji>`)
+	promoCodePattern      = regexp.MustCompile(`^[A-Z0-9_-]{3,32}$`)
+	bannerIDPattern       = regexp.MustCompile(`^banner_[1-9][0-9]*$`)
+	bannerUploadPattern   = regexp.MustCompile(`^/mini-app/uploads/banner-[0-9a-f]{16}\.(png|gif|mp4)$`)
+)
+
+var featureOrder = []string{
+	"mini_app",
+	"additional_subscriptions",
+	"personal_device_profiles",
+	"google",
+	"email_auth",
+	"stars",
+	"trials",
+	"referrals",
+	"reviews",
+	"support",
+	"faq",
+	"media",
+	"promocodes",
+	"promo_code",
+	"partner",
+	"server_status",
+	"hide_inactive_node_hosts",
+	"payments_history",
+	"recurring_payments",
+	"gifts",
+	"news",
+	"login_methods",
+	"terms",
+	"privacy",
+	"web_version",
+	"pwa_install",
+}
+
+var setupPlatformOrder = []string{"ios", "android", "macos", "windows", "android-tv", "apple-tv"}
+
+var defaultPaymentMethodOrder = []string{"balance", "sbp", "card", "p2p", "stars", "crypto", "lava", "wata", "platega", "freekassa", "heleket", "pally", "rollypay", "cispay", "anore", "mulenpay", "aurapay", "antilopay", "paritypay", "tribute", "cloudpayments", "datagio", "kassaai", "payhot", "smerch", "laveshka"}
+
+func DefaultPaymentMethodOrder() []string {
+	return append([]string(nil), defaultPaymentMethodOrder...)
+}
+
+type Settings struct {
+	Interactive           InteractiveSettings             `json:"interactive"`
+	Torrents              TorrentSettings                 `json:"torrents"`
+	ReviewRewards         ReviewRewardSettings            `json:"reviewRewards"`
+	Version               int                             `json:"version"`
+	Localization          LocalizationSettings            `json:"localization"`
+	Maintenance           MaintenanceSettings             `json:"maintenance"`
+	Features              map[string]bool                 `json:"features"`
+	Content               ContentSettings                 `json:"content"`
+	Appearance            AppearanceSettings              `json:"appearance"`
+	Layout                LayoutSettings                  `json:"layout"`
+	SubPage               SubPageSettings                 `json:"subPage"`
+	Plans                 []PlanSettings                  `json:"plans"`
+	DevicePacks           []DevicePackSettings            `json:"devicePacks"`
+	TrafficPacks          []TrafficPackSettings           `json:"trafficPacks"`
+	DeviceAccess          DeviceAccessSettings            `json:"deviceAccess"`
+	PaymentMethodOrder    []string                        `json:"paymentMethodOrder"`
+	PaymentMethodText     map[string]PaymentMethodText    `json:"paymentMethodText"`
+	PaymentMethodVariants map[string]PaymentMethodVariant `json:"paymentMethodVariants"`
+	Trial                 TrialSettings                   `json:"trial"`
+	Referrals             ReferralSettings                `json:"referrals"`
+	Grace                 GraceSettings                   `json:"grace"`
+	Panel                 PanelSettings                   `json:"panel"`
+	HiddenServerNodes     []string                        `json:"hiddenServerNodes,omitempty"`
+	NodeMonitor           NodeMonitorSettings             `json:"nodeMonitor"`
+}
+
+type NodeMonitorSettings struct {
+	OfflineMinutes int `json:"offlineMinutes"`
+}
+
+type PaymentMethodText struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	LogoURL     string `json:"logoUrl,omitempty"`
+	HideLogo    bool   `json:"hideLogo,omitempty"`
+}
+
+type LocalizationSettings struct {
+	Language     string `json:"language"`
+	FontFamily   string `json:"fontFamily"`
+	FontFamilyRU string `json:"fontFamilyRu"`
+	FontFamilyEN string `json:"fontFamilyEn"`
+}
+
+type MaintenanceSettings struct {
+	Enabled  bool   `json:"enabled"`
+	TitleRU  string `json:"titleRu"`
+	TextRU   string `json:"textRu"`
+	ReasonRU string `json:"reasonRu"`
+}
+
+type FAQItem struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+type ProfileButtonSettings struct {
+	LabelRU string `json:"labelRu"`
+	HintRU  string `json:"hintRu"`
+	URL     string `json:"url,omitempty"`
+}
+
+type LegalDocumentSection struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+type LegalDocumentSettings struct {
+	Title          string                 `json:"title"`
+	EffectiveLabel string                 `json:"effectiveLabel"`
+	ModifiedAt     string                 `json:"modifiedAt,omitempty"`
+	Jurisdiction   string                 `json:"jurisdiction"`
+	Intro          string                 `json:"intro"`
+	Sections       []LegalDocumentSection `json:"sections"`
+	ContactTitle   string                 `json:"contactTitle"`
+	Contacts       string                 `json:"contacts"`
+	Footer         string                 `json:"footer"`
+}
+
+type CustomLink struct {
+	ID       string                `json:"id"`
+	LabelRU  string                `json:"labelRu"`
+	HintRU   string                `json:"hintRu"`
+	URL      string                `json:"url"`
+	Icon     string                `json:"icon"`
+	Type     string                `json:"type"`
+	Document LegalDocumentSettings `json:"document"`
+}
+
+type TelegramVerificationSettings struct {
+	Text              string                 `json:"text"`
+	Banner            string                 `json:"banner"`
+	ChannelChatID     string                 `json:"channelChatId"`
+	ChannelButton     TelegramButtonSettings `json:"channelButton"`
+	ConfirmButton     TelegramButtonSettings `json:"confirmButton"`
+	CheckFailedText   string                 `json:"checkFailedText"`
+	NotSubscribedText string                 `json:"notSubscribedText"`
+	VerifiedText      string                 `json:"verifiedText"`
+}
+
+type TelegramSupportSettings struct {
+	NewTicketText     string                 `json:"newTicketText"`
+	CustomerReplyText string                 `json:"customerReplyText"`
+	AdminReplyText    string                 `json:"adminReplyText"`
+	ClosedText        string                 `json:"closedText"`
+	OpenButton        TelegramButtonSettings `json:"openButton"`
+}
+
+type TelegramStartMenuSettings struct {
+	Buttons                []TelegramStartButton          `json:"buttons"`
+	NotificationsButton    OptionalTelegramButtonSettings `json:"notificationsButton"`
+	NotificationsOffButton TelegramButtonSettings         `json:"notificationsOffButton"`
+	TrialButton            TelegramButtonSettings         `json:"trialButton"`
+	DashboardButton        TelegramButtonSettings         `json:"dashboardButton"`
+	PlansButton            TelegramButtonSettings         `json:"plansButton"`
+	SupportButton          TelegramButtonSettings         `json:"supportButton"`
+}
+
+type TelegramStartButton struct {
+	ID                string                   `json:"id"`
+	Kind              string                   `json:"kind"`
+	Target            string                   `json:"target,omitempty"`
+	Row               int                      `json:"row"`
+	Text              string                   `json:"text"`
+	IconCustomEmojiID string                   `json:"iconCustomEmojiId,omitempty"`
+	Style             string                   `json:"style,omitempty"`
+	Submenu           *TelegramSubMenuSettings `json:"submenu,omitempty"`
+}
+
+type TelegramSubMenuSettings struct {
+	Text    string                `json:"text"`
+	Banner  string                `json:"banner,omitempty"`
+	Buttons []TelegramStartButton `json:"buttons"`
+}
+
+var startMenuPages = []string{"dashboard", "buy", "gift", "setup", "support", "faq", "reviews", "referrals", "partner", "servers", "settings", "media", "login-methods", "payments", "terms", "privacy", "admin"}
+
+func DefaultStartButtons(menu TelegramStartMenuSettings) []TelegramStartButton {
+	buttons := []TelegramStartButton{
+		{ID: "trial", Kind: "trial", Row: 0, Text: menu.TrialButton.Text, IconCustomEmojiID: menu.TrialButton.IconCustomEmojiID, Style: menu.TrialButton.Style},
+		{ID: "dashboard", Kind: "page", Target: "dashboard", Row: 1, Text: menu.DashboardButton.Text, IconCustomEmojiID: menu.DashboardButton.IconCustomEmojiID, Style: menu.DashboardButton.Style},
+		{ID: "plans", Kind: "plans", Row: 2, Text: menu.PlansButton.Text, IconCustomEmojiID: menu.PlansButton.IconCustomEmojiID, Style: menu.PlansButton.Style},
+		{ID: "support", Kind: "page", Target: "support", Row: 3, Text: menu.SupportButton.Text, IconCustomEmojiID: menu.SupportButton.IconCustomEmojiID, Style: menu.SupportButton.Style},
+	}
+	if menu.NotificationsButton.Enabled {
+		buttons = append(buttons, TelegramStartButton{ID: "notifications", Kind: "notifications", Row: 4, Text: menu.NotificationsButton.Text, IconCustomEmojiID: menu.NotificationsButton.IconCustomEmojiID, Style: menu.NotificationsButton.Style})
+	}
+	return buttons
+}
+
+type TelegramCommerceSettings struct {
+	Banner             string                 `json:"banner"`
+	TariffsText        string                 `json:"tariffsText"`
+	PaymentMethodsText string                 `json:"paymentMethodsText"`
+	PaymentReadyText   string                 `json:"paymentReadyText"`
+	YookassaButton     TelegramButtonSettings `json:"yookassaButton"`
+	CryptoButton       TelegramButtonSettings `json:"cryptoButton"`
+	StarsButton        TelegramButtonSettings `json:"starsButton"`
+	PayButton          TelegramButtonSettings `json:"payButton"`
+	BackButton         TelegramButtonSettings `json:"backButton"`
+	SuccessText        string                 `json:"successText"`
+	SuccessBanner      string                 `json:"successBanner"`
+	SuccessButton      TelegramButtonSettings `json:"successButton"`
+}
+
+type OptionalTelegramButtonSettings struct {
+	Enabled bool `json:"enabled"`
+	TelegramButtonSettings
+}
+
+type TelegramPaymentNotificationSettings struct {
+	Text           string                         `json:"text"`
+	OpenUserButton OptionalTelegramButtonSettings `json:"openUserButton"`
+	ProfileButton  OptionalTelegramButtonSettings `json:"profileButton"`
+}
+
+type TelegramGiftMessageSettings struct {
+	Text    string                     `json:"text"`
+	Buttons []database.BroadcastButton `json:"buttons"`
+}
+
+type TelegramGiftSettings struct {
+	Sender    TelegramGiftMessageSettings `json:"sender"`
+	Recipient TelegramGiftMessageSettings `json:"recipient"`
+	Inline    TelegramInlineGiftSettings  `json:"inline"`
+}
+
+type TelegramInlineGiftSettings struct {
+	PendingText      string `json:"pendingText"`
+	Text             string `json:"text"`
+	PaymentText      string `json:"paymentText"`
+	BannerURL        string `json:"bannerUrl"`
+	PreviewBannerURL string `json:"previewBannerUrl,omitempty"`
+	PayButtonText    string `json:"payButtonText"`
+	ButtonText       string `json:"buttonText"`
+}
+
+type WebPageSettings struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	FaviconURL  string `json:"faviconUrl"`
+}
+
+type ContentSettings struct {
+	BrandName                  string                              `json:"brandName"`
+	AdminContact               string                              `json:"adminContact"`
+	LogoURL                    string                              `json:"logoUrl"`
+	WebPage                    WebPageSettings                     `json:"webPage"`
+	StartTextRU                string                              `json:"startTextRu"`
+	StartImage                 string                              `json:"startImage"`
+	Copy                       map[string]map[string]string        `json:"copy"`
+	FAQ                        map[string][]FAQItem                `json:"faq"`
+	Links                      map[string]string                   `json:"links"`
+	CustomLinks                []CustomLink                        `json:"customLinks"`
+	ProfileButtons             map[string]ProfileButtonSettings    `json:"profileButtons"`
+	LegalDocuments             map[string]LegalDocumentSettings    `json:"legalDocuments"`
+	SubscriptionReminderButton TelegramButtonSettings              `json:"subscriptionReminderButton"`
+	Verification               TelegramVerificationSettings        `json:"verification"`
+	Support                    TelegramSupportSettings             `json:"support"`
+	StartMenu                  TelegramStartMenuSettings           `json:"startMenu"`
+	Trial                      TelegramTrialSettings               `json:"trial"`
+	Commerce                   TelegramCommerceSettings            `json:"commerce"`
+	PaymentNotification        TelegramPaymentNotificationSettings `json:"paymentNotification"`
+	WithdrawalNotification     TelegramWithdrawalSettings          `json:"withdrawalNotification"`
+	NodeNotification           TelegramNodeNotificationSettings    `json:"nodeNotification"`
+	Gift                       TelegramGiftSettings                `json:"gift"`
+}
+
+type TelegramNodeNotificationSettings struct {
+	DownText string `json:"downText"`
+	UpText   string `json:"upText"`
+}
+
+type TelegramWithdrawalSettings struct {
+	NewText       string                 `json:"newText"`
+	ApprovedText  string                 `json:"approvedText"`
+	RejectedText  string                 `json:"rejectedText"`
+	ApproveButton TelegramButtonSettings `json:"approveButton"`
+	RejectButton  TelegramButtonSettings `json:"rejectButton"`
+}
+
+type TelegramButtonSettings struct {
+	Text              string `json:"text"`
+	IconCustomEmojiID string `json:"iconCustomEmojiId"`
+	Style             string `json:"style"`
+}
+
+type AppearanceSettings struct {
+	Landing           LandingSettings                     `json:"landing"`
+	Seasonal          SeasonalDecorationSettings          `json:"seasonal"`
+	Cursors           map[string]CursorSettings           `json:"cursors"`
+	CustomBackgrounds []CustomBackgroundSettings          `json:"customBackgrounds"`
+	ActiveBackground  string                              `json:"activeBackground"`
+	BottomNavStyle    string                              `json:"bottomNavStyle"`
+	BackgroundMode    string                              `json:"backgroundMode"`
+	Colors            map[string]string                   `json:"colors"`
+	Liquid            map[string]LiquidBackgroundSettings `json:"liquid"`
+	BackgroundMotion  map[string]BackgroundMotionSettings `json:"backgroundMotion"`
+	Compact           bool                                `json:"compact"`
+	ShowFrames        bool                                `json:"showFrames"`
+	Glow              bool                                `json:"glow"`
+	Glass             bool                                `json:"glass"`
+}
+
+type SeasonalDecorationSettings struct {
+	Mode            string `json:"mode"`
+	Intensity       int    `json:"intensity"`
+	Animated        bool   `json:"animated"`
+	WinterGarland   bool   `json:"winterGarland"`
+	WinterDrifts    bool   `json:"winterDrifts"`
+	WinterSnow      bool   `json:"winterSnow"`
+	HalloweenSkulls bool   `json:"halloweenSkulls"`
+	HalloweenFog    bool   `json:"halloweenFog"`
+	HalloweenLeaves bool   `json:"halloweenLeaves"`
+	HalloweenWebs   bool   `json:"halloweenWebs"`
+	HalloweenSpider bool   `json:"halloweenSpider"`
+}
+
+// Each uploaded background keeps its own framing and playback settings.
+type CustomBackgroundSettings struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Poster    string `json:"poster,omitempty"`
+	Type      string `json:"type"`
+	Fit       string `json:"fit"`
+	Scale     int    `json:"scale"`
+	PositionX int    `json:"positionX"`
+	PositionY int    `json:"positionY"`
+	Speed     int    `json:"speed"`
+	Dimming   int    `json:"dimming"`
+}
+
+type LiquidBackgroundSettings struct {
+	Colors  []string `json:"colors"`
+	Dimming int      `json:"dimming"`
+	Speed   int      `json:"speed"`
+}
+
+type BackgroundMotionSettings struct {
+	Dimming int `json:"dimming"`
+	Speed   int `json:"speed"`
+}
+
+type LayoutElement struct {
+	ID                string   `json:"id"`
+	Area              string   `json:"area"`
+	Order             int      `json:"order"`
+	Visible           bool     `json:"visible"`
+	Width             float64  `json:"width"`
+	Height            int      `json:"height"`
+	Framed            bool     `json:"framed"`
+	Align             string   `json:"align"`
+	OffsetX           int      `json:"offsetX"`
+	OffsetY           int      `json:"offsetY"`
+	PositionX         *float64 `json:"positionX,omitempty"`
+	PositionY         *float64 `json:"positionY,omitempty"`
+	Group             string   `json:"group,omitempty"`
+	PromoCode         string   `json:"promoCode,omitempty"`
+	NotificationText  string   `json:"notificationText,omitempty"`
+	IconBubble        *bool    `json:"iconBubble,omitempty"`
+	CornerRadius      int      `json:"cornerRadius"`
+	TextScale         int      `json:"textScale,omitempty"`
+	TextOffsetX       int      `json:"textOffsetX,omitempty"`
+	TextOffsetY       int      `json:"textOffsetY,omitempty"`
+	Layer             int      `json:"layer"`
+	BannerURL         string   `json:"bannerUrl,omitempty"`
+	BannerMediaType   string   `json:"bannerMediaType,omitempty"`
+	BannerCropX       int      `json:"bannerCropX"`
+	BannerCropY       int      `json:"bannerCropY"`
+	BannerZoom        int      `json:"bannerZoom"`
+	BannerMediaWidth  int      `json:"bannerMediaWidth,omitempty"`
+	BannerMediaHeight int      `json:"bannerMediaHeight,omitempty"`
+	BannerCropLeft    float64  `json:"bannerCropLeft,omitempty"`
+	BannerCropTop     float64  `json:"bannerCropTop,omitempty"`
+	BannerCropWidth   float64  `json:"bannerCropWidth,omitempty"`
+	BannerCropHeight  float64  `json:"bannerCropHeight,omitempty"`
+	BannerAction      string   `json:"bannerAction,omitempty"`
+	BannerTarget      string   `json:"bannerTarget,omitempty"`
+	BannerAlt         string   `json:"bannerAlt,omitempty"`
+}
+
+type LayoutSettings struct {
+	Elements    []LayoutElement `json:"elements"`
+	PlanColumns int             `json:"planColumns"`
+	LogoWidth   int             `json:"logoWidth"`
+}
+
+type SubPageSettings struct {
+	IncludeBuiltIns  bool                    `json:"includeBuiltIns"`
+	PriorityBuiltIns []string                `json:"priorityBuiltIns"`
+	Clients          []SubPageClientSettings `json:"clients"`
+}
+
+type SubPageClientSettings struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Scheme         string   `json:"scheme"`
+	InstallURL     string   `json:"installUrl"`
+	InstallLabelRU string   `json:"installLabelRu"`
+	Enabled        bool     `json:"enabled"`
+	Featured       bool     `json:"featured"`
+	AllPlatforms   bool     `json:"allPlatforms"`
+	Platforms      []string `json:"platforms"`
+}
+
+type PlanSettings struct {
+	DeviceTrafficUserManaged bool                         `json:"-"`
+	ID                       string                       `json:"id"`
+	Enabled                  bool                         `json:"enabled"`
+	Months                   int                          `json:"months"`
+	Days                     int                          `json:"days,omitempty"`
+	Name                     string                       `json:"name,omitempty"`
+	NameEN                   string                       `json:"nameEn,omitempty"`
+	TitleRU                  string                       `json:"titleRu"`
+	TitleEN                  string                       `json:"titleEn"`
+	TitleFA                  string                       `json:"titleFa"`
+	PriceRub                 int                          `json:"priceRub"`
+	OriginalPriceRub         int                          `json:"originalPriceRub,omitempty"`
+	DiscountEndsAt           string                       `json:"discountEndsAt,omitempty"`
+	PriceStars               int                          `json:"priceStars"`
+	FreeOneTime              bool                         `json:"freeOneTime"`
+	TrafficGB                int                          `json:"trafficGb"`
+	UnlimitedTraffic         bool                         `json:"unlimitedTraffic"`
+	DeviceLimit              int                          `json:"deviceLimit"`
+	DeviceTrafficEnabled     bool                         `json:"deviceTrafficEnabled"`
+	DeviceTrafficEnforced    bool                         `json:"deviceTrafficEnforced"`
+	DeviceTrafficRules       []planbook.DeviceTrafficRule `json:"deviceTrafficRules,omitempty"`
+	Wide                     bool                         `json:"wide"`
+	InternalSquadUUIDs       []string                     `json:"internalSquadUuids"`
+	InternalSquadsConfigured bool                         `json:"internalSquadsConfigured"`
+	ExternalSquadUUID        string                       `json:"externalSquadUuid"`
+}
+
+type DevicePackSettings struct {
+	ID         string `json:"id"`
+	Enabled    bool   `json:"enabled"`
+	Devices    int    `json:"devices"`
+	PriceRub   int    `json:"priceRub"`
+	PriceStars int    `json:"priceStars"`
+	Wide       bool   `json:"wide"`
+}
+
+type TrafficPackSettings struct {
+	ID         string `json:"id"`
+	Enabled    bool   `json:"enabled"`
+	TrafficGB  int    `json:"trafficGb"`
+	PriceRub   int    `json:"priceRub"`
+	PriceStars int    `json:"priceStars"`
+	Wide       bool   `json:"wide"`
+}
+
+type DeviceAccessSettings struct {
+	PurchaseNotification bool   `json:"purchaseNotification"`
+	ReminderNotification bool   `json:"reminderNotification"`
+	ExpiryNotification   bool   `json:"expiryNotification"`
+	ReminderDays         int    `json:"reminderDays"`
+	PurchaseTemplate     string `json:"purchaseTemplate"`
+	ReminderTemplate     string `json:"reminderTemplate"`
+	ExpiryTemplate       string `json:"expiryTemplate"`
+}
+
+func DefaultDeviceAccess() DeviceAccessSettings {
+	return DeviceAccessSettings{
+		PurchaseNotification: true, ReminderNotification: true, ExpiryNotification: true, ReminderDays: 1,
+		PurchaseTemplate: "<b>Дополнительные устройства оплачены</b>\n\nПодписка: {subscription}\nДобавлено: <b>{devices}</b>\nЛимит: <b>{limit}</b>\nДействуют до: <b>{expires}</b>\nПродление подписки не продлевает срок дополнительных устройств.",
+		ReminderTemplate: "<b>Срок дополнительных устройств заканчивается</b>\n\nПодписка: {subscription}\nДополнительных устройств: <b>{devices}</b>\nДействуют до: <b>{expires}</b>\nПосле окончания оплаченного срока лимит уменьшится.",
+		ExpiryTemplate:   "<b>Срок дополнительных устройств истёк</b>\n\nПодписка: {subscription}\nУбрано: <b>{devices}</b>\nТекущий лимит: <b>{limit}</b>\nДоступ по подписке сохраняется до её даты окончания.",
+	}
+}
+
+type TrialSettings struct {
+	Enabled                  bool     `json:"enabled"`
+	Days                     int      `json:"days"`
+	TrafficGB                int      `json:"trafficGb"`
+	UnlimitedTraffic         bool     `json:"unlimitedTraffic"`
+	DeviceLimit              int      `json:"deviceLimit"`
+	InternalSquadUUIDs       []string `json:"internalSquadUuids"`
+	InternalSquadsConfigured bool     `json:"internalSquadsConfigured"`
+	ExternalSquadUUID        string   `json:"externalSquadUuid"`
+	TrafficResetStrategy     string   `json:"trafficResetStrategy"`
+	Tag                      string   `json:"tag"`
+}
+
+type ReferralRewardSettings struct {
+	Days           int    `json:"days"`
+	TrafficGB      int    `json:"trafficGb"`
+	BalanceMode    string `json:"balanceMode"`
+	BalanceRub     int    `json:"balanceRub"`
+	BalancePercent int    `json:"balancePercent"`
+}
+
+type ReferralSettings struct {
+	Trial                  ReferralRewardSettings `json:"trial"`
+	Purchase               ReferralRewardSettings `json:"purchase"`
+	RewardEveryPurchase    bool                   `json:"rewardEveryPurchase"`
+	BalancePaymentsEnabled bool                   `json:"balancePaymentsEnabled"`
+	WithdrawalsEnabled     bool                   `json:"withdrawalsEnabled"`
+	MinimumWithdrawalRub   int                    `json:"minimumWithdrawalRub"`
+}
+
+type GraceSettings struct {
+	Enabled            bool     `json:"enabled"`
+	Days               int      `json:"days"`
+	InternalSquadUUIDs []string `json:"internalSquadUuids"`
+}
+
+type PanelSettings struct {
+	UsernameTemplate string `json:"usernameTemplate"`
+}
+
+type Service struct {
+	repository *database.RuntimeSettingsRepository
+	value      atomic.Value
+	mu         sync.Mutex
+	emojiBot   *bot.Bot
+	emojiAlts  map[string]string
+}
+
+func NewService(ctx context.Context, repository *database.RuntimeSettingsRepository) (*Service, error) {
+	if repository == nil {
+		return nil, errors.New("runtime settings repository is required")
+	}
+
+	service := &Service{repository: repository}
+	settings := DefaultSettings()
+	raw, err := repository.Load(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load runtime settings: %w", err)
+	}
+	if len(raw) > 0 && string(raw) != "{}" {
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return nil, fmt.Errorf("decode runtime settings: %w", err)
+		}
+	}
+	loadedVersion := settings.Version
+	if err := NormalizeAndValidate(&settings); err != nil {
+		return nil, fmt.Errorf("validate runtime settings: %w", err)
+	}
+	if loadedVersion < CurrentVersion {
+		normalized, err := json.Marshal(settings)
+		if err != nil {
+			return nil, fmt.Errorf("encode migrated runtime settings: %w", err)
+		}
+		if err := repository.Save(ctx, normalized, 0); err != nil {
+			return nil, fmt.Errorf("save migrated runtime settings: %w", err)
+		}
+	}
+	service.value.Store(settings)
+	return service, nil
+}
+
+func DefaultSettings() Settings {
+	features := map[string]bool{}
+	for _, name := range featureOrder {
+		features[name] = true
+	}
+	features["personal_device_profiles"] = false
+	features["recurring_payments"] = false
+	features["hide_inactive_node_hosts"] = false
+	language := normalizeRuntimeLanguage(config.DefaultLanguage())
+	fontFamily := strings.ToLower(strings.TrimSpace(config.DefaultFont()))
+	if fontFamily != "montserrat" && fontFamily != "vazir" {
+		fontFamily = "auto"
+	}
+
+	settings := Settings{
+		Interactive:        DefaultInteractiveSettings(),
+		Version:            CurrentVersion,
+		ReviewRewards:      DefaultReviewRewards(),
+		PaymentMethodOrder: DefaultPaymentMethodOrder(),
+		PaymentMethodText:  map[string]PaymentMethodText{},
+		Localization: LocalizationSettings{
+			Language:     language,
+			FontFamily:   fontFamily,
+			FontFamilyRU: "montserrat",
+			FontFamilyEN: "inter",
+		},
+		Maintenance: MaintenanceSettings{
+			TitleRU:  "Технические работы",
+			TextRU:   "Сервис временно недоступен. Попробуйте немного позже.",
+			ReasonRU: "Плановые работы",
+		},
+		Torrents:    DefaultTorrentSettings(),
+		Features:    features,
+		NodeMonitor: NodeMonitorSettings{OfflineMinutes: 3},
+		Content: ContentSettings{
+			BrandName:    "Link-Bot",
+			AdminContact: "",
+			LogoURL:      "/mini-app/assets/brand-mark.png",
+			WebPage: WebPageSettings{
+				Title:       "Link-Bot",
+				Description: "Link-Bot Mini App",
+				FaviconURL:  "/mini-app/assets/brand-mark.png",
+			},
+			StartImage: "",
+			Copy: map[string]map[string]string{"ru": {
+				"deviceAddedTemplate":        "<b>Новое устройство подключено</b>\n\nДобавлено: <b>{added}</b>\nУстройств: <b>{count}/{limit}</b>",
+				"deviceLimitReachedTemplate": "<b>Достигнут лимит устройств</b>\n\nПодключено <b>{count}</b> из <b>{limit}</b>. Удалите старое устройство или докупите дополнительные.",
+				"reviewCreatedTemplate":      "<b>Новый отзыв</b>\n\nПользователь: <b>{name}</b>\nUsername: {username}\nОценка: <b>{rating}/5</b>\n\n<blockquote>{comment}</blockquote>",
+			}},
+			FAQ: map[string][]FAQItem{"ru": {}},
+			Links: map[string]string{
+				"support": strings.TrimSpace(config.SupportURL()),
+				"channel": firstNonEmpty(config.RequiredChannelSubscriptionURL(), config.ChannelURL()),
+			},
+			CustomLinks:    []CustomLink{},
+			ProfileButtons: map[string]ProfileButtonSettings{},
+			LegalDocuments: map[string]LegalDocumentSettings{},
+			Verification: TelegramVerificationSettings{
+				Text:   "<b>Link-Bot Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
+				Banner: "",
+				ChannelButton: TelegramButtonSettings{
+					Text: "Link-Bot",
+				},
+				ConfirmButton: TelegramButtonSettings{
+					Text: "✅ Я подписался",
+				},
+				CheckFailedText:   "Не удалось проверить подписку. Попробуйте ещё раз",
+				NotSubscribedText: "Подписка пока не найдена",
+				VerifiedText:      "Готово, доступ открыт",
+			},
+			Support: TelegramSupportSettings{
+				NewTicketText:     "🆕 <b>Новое обращение #{ticket_id}</b>\n\n👤 <b>Пользователь:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>Подписка:</b> {subscription}\n\n💬 <b>Сообщение:</b>\n{message}",
+				CustomerReplyText: "📩 <b>Обращение #{ticket_id}</b>\nПолучен новый ответ от пользователя.\n\n👤 <b>Пользователь:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>Подписка:</b> {subscription}\n\n{message}",
+				AdminReplyText:    "📬 <b>Обращение #{ticket_id}</b>\nПоддержка ответила на ваше сообщение.\n\n{message}",
+				ClosedText:        "💌 <b>Обращение #{ticket_id} закрыто.</b>\nИстория переписки доступна в Mini app.",
+				OpenButton: TelegramButtonSettings{
+					Text: "Открыть Mini app",
+				},
+			},
+			StartMenu: TelegramStartMenuSettings{
+				NotificationsButton:    OptionalTelegramButtonSettings{TelegramButtonSettings: TelegramButtonSettings{Text: "Уведомления: вкл.", Style: "success"}},
+				NotificationsOffButton: TelegramButtonSettings{Text: "Уведомления: выкл.", Style: "danger"},
+				TrialButton: TelegramButtonSettings{
+					Text:              "Попробовать бесплатно",
+					IconCustomEmojiID: "5276422526350681413",
+				},
+				DashboardButton: TelegramButtonSettings{
+					Text:              "Вход",
+					IconCustomEmojiID: "5278413853577734640",
+				},
+				PlansButton: TelegramButtonSettings{
+					Text:              "Тарифы",
+					IconCustomEmojiID: "5206626000665868017",
+				},
+				SupportButton: TelegramButtonSettings{
+					Text:              "Чат с поддержкой",
+					IconCustomEmojiID: "5206222720416643915",
+				},
+			},
+			Commerce: TelegramCommerceSettings{
+				Banner:             "",
+				TariffsText:        `<b><tg-emoji emoji-id="5206626000665868017">☺️</tg-emoji> Выберите подходящий тариф</b>`,
+				PaymentMethodsText: `<b><tg-emoji emoji-id="5192678313415434135">☺️</tg-emoji> Выберите способ оплаты</b>`,
+				PaymentReadyText:   `<b><tg-emoji emoji-id="5278305362703835500">☺️</tg-emoji> Подписка активируется автоматически после оплаты</b>`,
+				YookassaButton: TelegramButtonSettings{
+					Text:              "СБП | Карта",
+					IconCustomEmojiID: "5192678313415434135",
+				},
+				CryptoButton: TelegramButtonSettings{
+					Text:              "CryptoPay",
+					IconCustomEmojiID: "5195058841988914267",
+				},
+				StarsButton: TelegramButtonSettings{
+					Text:              "Telegram Stars",
+					IconCustomEmojiID: "5242644275014951846",
+				},
+				PayButton: TelegramButtonSettings{
+					Text:              "Оплатить",
+					IconCustomEmojiID: "5206401524200145033",
+				},
+				BackButton: TelegramButtonSettings{
+					Text:              "Назад",
+					IconCustomEmojiID: "5877629862306385808",
+				},
+				SuccessText: "<b>Подписка успешно активирована ✅</b>\n\nПриятного и безопасного интернета!",
+				SuccessButton: TelegramButtonSettings{
+					Text:              "Личный кабинет",
+					IconCustomEmojiID: "5278413853577734640",
+				},
+			},
+			Trial: defaultTelegramTrialSettings(),
+			PaymentNotification: TelegramPaymentNotificationSettings{
+				Text: premiumPaymentNotificationTemplate(),
+				OpenUserButton: OptionalTelegramButtonSettings{
+					Enabled: true,
+					TelegramButtonSettings: TelegramButtonSettings{
+						Text:  "Открыть пользователя в панели",
+						Style: "primary",
+					},
+				},
+				ProfileButton: OptionalTelegramButtonSettings{
+					Enabled: true,
+					TelegramButtonSettings: TelegramButtonSettings{
+						Text: "Профиль",
+					},
+				},
+			},
+			WithdrawalNotification: TelegramWithdrawalSettings{
+				NewText:       "<b>Заявки на вывод · {pending_count}</b>\n\n<blockquote><b>{amount}</b> · №{id}\n{username}\n{payout_details}</blockquote>",
+				ApprovedText:  "<b>Вывод №{id} · Выплачено ✅</b>\n\n<b>{amount}</b> · {username}\n<blockquote>{payout_details}</blockquote>",
+				RejectedText:  "<b>Вывод №{id} · Отклонено ❌</b>\n\n<b>{amount}</b> · {username}\n<blockquote>{payout_details}</blockquote>",
+				ApproveButton: TelegramButtonSettings{Text: "✓ Выплачено", Style: "success"},
+				RejectButton:  TelegramButtonSettings{Text: "✕ Отклонить", Style: "danger"},
+			},
+			NodeNotification: TelegramNodeNotificationSettings{
+				DownText: "🔴 <b>Нода недоступна</b>\n\nНода: <b>{node}</b>\nХосты: {hosts}\nНедоступна: {duration}",
+				UpText:   "🟢 <b>Нода восстановилась</b>\n\nНода: <b>{node}</b>\nХосты: {hosts}\nПростой: {duration}",
+			},
+			Gift: TelegramGiftSettings{
+				Inline: TelegramInlineGiftSettings{PendingText: "<b>Подарок: {plan}</b> 🎁\n\nОжидает оплаты отправителем.", Text: "<b>Вам подарили подписку 🎁</b>\n\nТариф: <b>{plan}</b>\nОтправитель: {sender}\n\nНажмите «Получить», чтобы активировать подписку.", PaymentText: "🎁 Подарок подготовлен. Откройте оплату и выберите удобный способ.", PayButtonText: "Оплатить", ButtonText: "Получить"},
+				Sender: TelegramGiftMessageSettings{
+					Text: "<b>Вы отправили подарок {recipient}</b>\n\nЕсли этот пользователь уже заходил в нашего бота, подарок придёт ему автоматически. Если нет — подписка активируется, когда он напишет /start.\n\nОтправьте ему ссылку на подарок, если его ещё нет в боте.",
+					Buttons: []database.BroadcastButton{{
+						ID: "gift_link", Type: "gift", Text: "Открыть подарок", Style: "primary",
+					}},
+				},
+				Recipient: TelegramGiftMessageSettings{
+					Text: "<b>Вам подарили подписку 🎁</b>\n\n{sender} отправил вам тариф <b>{plan}</b>. Подписка уже активирована и готова к использованию.",
+					Buttons: []database.BroadcastButton{{
+						ID: "gift_account", Type: "main", Text: "Личный кабинет", Style: "success",
+					}},
+				},
+			},
+		},
+		Appearance: AppearanceSettings{
+			Seasonal: SeasonalDecorationSettings{
+				Mode: "off", Intensity: 55, Animated: true,
+				WinterDrifts: true, WinterSnow: true,
+				HalloweenLeaves: true, HalloweenWebs: true, HalloweenSpider: true,
+			},
+			BottomNavStyle: "classic",
+			BackgroundMode: "animated",
+			Compact:        true,
+			ShowFrames:     true,
+			BackgroundMotion: map[string]BackgroundMotionSettings{
+				"animated": {Dimming: 12, Speed: 45},
+				"grid":     {Dimming: 14, Speed: 50},
+				"grid2":    {Dimming: 14, Speed: 50},
+				"blocks":   {Dimming: 0, Speed: 35},
+				"morphic":  {Dimming: 0, Speed: 42},
+				"twinkle":  {Dimming: 0, Speed: 38},
+				"liquid1":  {Dimming: 16, Speed: 35},
+				"liquid2":  {Dimming: 22, Speed: 30},
+				"backtyan": {Dimming: 65, Speed: 50},
+				"solid":    {Dimming: 0, Speed: 50},
+			},
+			Liquid: map[string]LiquidBackgroundSettings{
+				"liquid1": {
+					Colors:  []string{"#07111d", "#407f8d", "#88799e", "#e9eeea"},
+					Dimming: 16,
+					Speed:   35,
+				},
+				"liquid2": {
+					Colors:  []string{"#05090d", "#334f5b", "#566b76", "#cfddd9"},
+					Dimming: 22,
+					Speed:   30,
+				},
+			},
+			Colors: map[string]string{
+				"background":        "#000000",
+				"surface":           "#08090c",
+				"surfaceStrong":     "#0b0d12",
+				"text":              "#f3f3f3",
+				"muted":             "#a0a0a0",
+				"border":            "#2a2d33",
+				"button":            "#0b0d12",
+				"buttonText":        "#f3f3f3",
+				"icon":              "#f3f3f3",
+				"accent":            "#ba173d",
+				"success":           "#2da44e",
+				"danger":            "#f85149",
+				"unlimitedBadge":    "#949494",
+				"gridBackground":    "#000000",
+				"gridLine":          "#ffffff",
+				"gridGlowLeft":      "#ffffff",
+				"gridGlowRight":     "#ffffff",
+				"grid2Background":   "#000000",
+				"grid2Line":         "#ffffff",
+				"grid2Glow":         "#ff0000",
+				"blocksBackground":  "#0a0a0c",
+				"blocksLeft":        "#161619",
+				"blocksRight":       "#0c0c0e",
+				"morphicBackground": "#000000",
+				"morphicBall":       "#ff69b4",
+				"twinkleBackground": "#000000",
+				"twinkleStar":       "#ffffff",
+				"waveBackground":    "#000000",
+				"waveDot":           "#ebebeb",
+			},
+		},
+		Layout: LayoutSettings{
+			Elements:    defaultLayoutElements(),
+			PlanColumns: 2,
+			LogoWidth:   188,
+		},
+		SubPage: SubPageSettings{
+			IncludeBuiltIns:  true,
+			PriorityBuiltIns: []string{},
+			Clients:          []SubPageClientSettings{},
+		},
+		Plans:        defaultPlans(),
+		DevicePacks:  defaultDevicePacks(),
+		TrafficPacks: []TrafficPackSettings{},
+		DeviceAccess: DefaultDeviceAccess(),
+		Trial: TrialSettings{
+			Enabled:                  config.TrialDays() > 0,
+			Days:                     config.TrialDays(),
+			TrafficGB:                config.TrialTrafficLimitGB(),
+			UnlimitedTraffic:         config.TrialTrafficLimitGB() == 0,
+			DeviceLimit:              config.TrialDeviceLimit(),
+			InternalSquadUUIDs:       uuidMapStrings(config.TrialInternalSquads()),
+			InternalSquadsConfigured: len(config.TrialInternalSquads()) > 0,
+			ExternalSquadUUID:        uuidString(config.TrialExternalSquadUUID()),
+			TrafficResetStrategy:     config.TrialTrafficLimitResetStrategy(),
+			Tag:                      config.TrialRemnawaveTag(),
+		},
+		Referrals: ReferralSettings{
+			Trial: ReferralRewardSettings{BalanceMode: "none"},
+			Purchase: ReferralRewardSettings{
+				Days:        config.GetReferralDays(),
+				TrafficGB:   int(config.ReferralTrafficBonusBytes() / (1024 * 1024 * 1024)),
+				BalanceMode: "none",
+			},
+			BalancePaymentsEnabled: true,
+			WithdrawalsEnabled:     true,
+			MinimumWithdrawalRub:   500,
+		},
+		Grace: GraceSettings{
+			Days: 1,
+		},
+		Panel: PanelSettings{
+			UsernameTemplate: "{{customer_id}}_{{telegram_id}}",
+		},
+	}
+	settings.Content = LocalizeTelegramDefaults(settings.Content, language)
+	return settings
+}
+
+func normalizeRuntimeLanguage(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fa", "fa-ir", "persian", "farsi":
+		return "fa"
+	case "en", "en-us", "en-gb":
+		return "en"
+	default:
+		return "ru"
+	}
+}
+
+// LocalizeTelegramDefaults translates only bundled defaults. Values customized
+// in the content editor are intentionally preserved when the global language changes.
+func LocalizeTelegramDefaults(content ContentSettings, language string) ContentSettings {
+	language = normalizeRuntimeLanguage(language)
+	localized := func(current, ru, en, fa string) string {
+		current = strings.TrimSpace(current)
+		if current != "" && current != strings.TrimSpace(ru) && current != strings.TrimSpace(en) && current != strings.TrimSpace(fa) {
+			return current
+		}
+		switch language {
+		case "fa":
+			return fa
+		case "en":
+			return en
+		default:
+			return ru
+		}
+	}
+
+	if content.Trial == (TelegramTrialSettings{}) {
+		content.Trial = defaultTelegramTrialSettings()
+	}
+	trialDefaults := defaultTelegramTrialSettings()
+	content.Trial.Text = localized(content.Trial.Text, trialDefaults.Text, "Your trial version is active", "دسترسی آزمایشی شما آماده فعال‌سازی است")
+	content.Trial.ActivatedText = localized(content.Trial.ActivatedText, trialDefaults.ActivatedText, "Trial period activated", "دوره آزمایشی فعال شد")
+	content.Trial.ActivateButton.Text = localized(content.Trial.ActivateButton.Text, trialDefaults.ActivateButton.Text, "Activate trial version", "فعال‌کردن دوره آزمایشی")
+	content.Trial.ConnectButton.Text = localized(content.Trial.ConnectButton.Text, trialDefaults.ConnectButton.Text, "🔌 Connect", "🔌 اتصال")
+	content.Verification.Text = localized(content.Verification.Text,
+		"<b>Link-Bot Верификация</b>\n\nЧтобы открыть доступ к боту и mini app, подпишитесь на наш Telegram-канал <b>%s</b>.\n\nТам мы публикуем новости, обновления сервиса, важные изменения и полезные анонсы.\n\nПосле подписки нажмите кнопку ниже.",
+		"<b>Link-Bot Verification</b>\n\nTo open the bot and Mini App, subscribe to our Telegram channel <b>%s</b>.\n\nWe publish service news, updates and important notices there.\n\nAfter subscribing, tap the button below.",
+		"<b>تأیید Link-Bot</b>\n\nبرای دسترسی به ربات و Mini App، در کانال Telegram ما <b>%s</b> عضو شوید.\n\nخبرها، به‌روزرسانی‌ها و اطلاعیه‌های مهم در آنجا منتشر می‌شود.\n\nپس از عضویت، دکمه زیر را بزنید.")
+	content.Verification.ConfirmButton.Text = localized(content.Verification.ConfirmButton.Text, "✅ Я подписался", "✅ I subscribed", "✅ عضو شدم")
+	content.Verification.CheckFailedText = localized(content.Verification.CheckFailedText, "Не удалось проверить подписку. Попробуйте ещё раз", "Could not verify the subscription. Try again", "بررسی عضویت انجام نشد. دوباره تلاش کنید")
+	content.Verification.NotSubscribedText = localized(content.Verification.NotSubscribedText, "Подписка пока не найдена", "Subscription not found yet", "هنوز عضویت شما پیدا نشد")
+	content.Verification.VerifiedText = localized(content.Verification.VerifiedText, "Готово, доступ открыт", "Done, access is open", "انجام شد؛ دسترسی باز شد")
+
+	content.StartMenu.TrialButton.Text = localized(content.StartMenu.TrialButton.Text, "Попробовать бесплатно", "Try for free", "استفاده آزمایشی")
+	content.StartMenu.DashboardButton.Text = localized(content.StartMenu.DashboardButton.Text, "Вход", "Account", "حساب کاربری")
+	content.StartMenu.PlansButton.Text = localized(content.StartMenu.PlansButton.Text, "Тарифы", "Plans", "تعرفه‌ها")
+	content.StartMenu.SupportButton.Text = localized(content.StartMenu.SupportButton.Text, "Чат с поддержкой", "Support chat", "گفت‌وگو با پشتیبانی")
+	if content.StartMenu.NotificationsOffButton == (TelegramButtonSettings{}) {
+		content.StartMenu.NotificationsOffButton = TelegramButtonSettings{Text: "Уведомления: выкл.", Style: "danger"}
+		if content.StartMenu.NotificationsButton.Style == "" {
+			content.StartMenu.NotificationsButton.Style = "success"
+		}
+	}
+	for _, legacy := range []string{"Уведомления", "Notifications", "اعلان‌ها"} {
+		if content.StartMenu.NotificationsButton.Text == legacy {
+			content.StartMenu.NotificationsButton.Text = ""
+		}
+	}
+	content.StartMenu.NotificationsButton.Text = localized(content.StartMenu.NotificationsButton.Text, "Уведомления: вкл.", "Notifications: on", "اعلان‌ها: روشن")
+	content.StartMenu.NotificationsOffButton.Text = localized(content.StartMenu.NotificationsOffButton.Text, "Уведомления: выкл.", "Notifications: off", "اعلان‌ها: خاموش")
+	for index := range content.StartMenu.Buttons {
+		button := &content.StartMenu.Buttons[index]
+		switch button.ID {
+		case "trial":
+			button.Text = localized(button.Text, "Попробовать бесплатно", "Try for free", "استفاده آزمایشی")
+		case "dashboard":
+			button.Text = localized(button.Text, "Вход", "Account", "حساب کاربری")
+		case "plans":
+			button.Text = localized(button.Text, "Тарифы", "Plans", "تعرفه‌ها")
+		case "support":
+			button.Text = localized(button.Text, "Чат с поддержкой", "Support chat", "گفت‌وگو با پشتیبانی")
+		}
+	}
+
+	content.Commerce.TariffsText = localized(content.Commerce.TariffsText, `<b><tg-emoji emoji-id="5206626000665868017">☺️</tg-emoji> Выберите подходящий тариф</b>`, `<b><tg-emoji emoji-id="5206626000665868017">☺️</tg-emoji> Choose a plan</b>`, `<b><tg-emoji emoji-id="5206626000665868017">☺️</tg-emoji> یک تعرفه انتخاب کنید</b>`)
+	content.Commerce.PaymentMethodsText = localized(content.Commerce.PaymentMethodsText, `<b><tg-emoji emoji-id="5192678313415434135">☺️</tg-emoji> Выберите способ оплаты</b>`, `<b><tg-emoji emoji-id="5192678313415434135">☺️</tg-emoji> Choose a payment method</b>`, `<b><tg-emoji emoji-id="5192678313415434135">☺️</tg-emoji> روش پرداخت را انتخاب کنید</b>`)
+	content.Commerce.PaymentReadyText = localized(content.Commerce.PaymentReadyText, `<b><tg-emoji emoji-id="5278305362703835500">☺️</tg-emoji> Подписка активируется автоматически после оплаты</b>`, `<b><tg-emoji emoji-id="5278305362703835500">☺️</tg-emoji> The subscription activates automatically after payment</b>`, `<b><tg-emoji emoji-id="5278305362703835500">☺️</tg-emoji> اشتراک پس از پرداخت خودکار فعال می‌شود</b>`)
+	content.Commerce.YookassaButton.Text = localized(content.Commerce.YookassaButton.Text, "СБП | Карта", "Card | SBP", "کارت بانکی")
+	content.Commerce.PayButton.Text = localized(content.Commerce.PayButton.Text, "Оплатить", "Pay", "پرداخت")
+	content.Commerce.BackButton.Text = localized(content.Commerce.BackButton.Text, "Назад", "Back", "بازگشت")
+	content.Commerce.SuccessText = localized(content.Commerce.SuccessText, "<b>Подписка успешно активирована ✅</b>\n\nПриятного и безопасного интернета!", "<b>Subscription activated successfully ✅</b>\n\nEnjoy a safe connection!", "<b>اشتراک با موفقیت فعال شد ✅</b>\n\nاز اتصال امن خود لذت ببرید!")
+	content.Commerce.SuccessButton.Text = localized(content.Commerce.SuccessButton.Text, "Личный кабинет", "Account", "حساب کاربری")
+	content.Gift.Sender.Text = localized(content.Gift.Sender.Text,
+		"<b>Вы отправили подарок {recipient}</b>\n\nЕсли этот пользователь уже заходил в нашего бота, подарок придёт ему автоматически. Если нет — подписка активируется, когда он напишет /start.\n\nОтправьте ему ссылку на подарок, если его ещё нет в боте.",
+		"<b>You sent a gift to {recipient}</b>\n\nIf this user has already opened our bot, the gift will arrive automatically. Otherwise, the subscription activates when they send /start.\n\nSend them the gift link if they have not used the bot yet.",
+		"<b>شما برای {recipient} هدیه فرستادید</b>\n\nاگر این کاربر قبلاً ربات را باز کرده باشد، هدیه خودکار می‌رسد. در غیر این صورت با ارسال /start اشتراک فعال می‌شود.\n\nاگر هنوز از ربات استفاده نکرده است، لینک هدیه را برای او بفرستید.")
+	content.Gift.Recipient.Text = localized(content.Gift.Recipient.Text,
+		"<b>Вам подарили подписку 🎁</b>\n\n{sender} отправил вам тариф <b>{plan}</b>. Подписка уже активирована и готова к использованию.",
+		"<b>You received a subscription gift 🎁</b>\n\n{sender} sent you the <b>{plan}</b> plan. Your subscription is active and ready to use.",
+		"<b>یک اشتراک هدیه گرفتید 🎁</b>\n\n{sender} تعرفه <b>{plan}</b> را برای شما فرستاد. اشتراک فعال و آماده استفاده است.")
+	if len(content.Gift.Sender.Buttons) == 1 {
+		content.Gift.Sender.Buttons[0].Text = localized(content.Gift.Sender.Buttons[0].Text, "Открыть подарок", "Open gift", "باز کردن هدیه")
+	}
+	if len(content.Gift.Recipient.Buttons) == 1 {
+		content.Gift.Recipient.Buttons[0].Text = localized(content.Gift.Recipient.Buttons[0].Text, "Личный кабинет", "Account", "حساب کاربری")
+	}
+
+	content.Support.NewTicketText = localized(content.Support.NewTicketText, "🆕 <b>Новое обращение #{ticket_id}</b>\n\n👤 <b>Пользователь:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>Подписка:</b> {subscription}\n\n💬 <b>Сообщение:</b>\n{message}", "🆕 <b>New ticket #{ticket_id}</b>\n\n👤 <b>User:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>Subscription:</b> {subscription}\n\n💬 <b>Message:</b>\n{message}", "🆕 <b>درخواست جدید #{ticket_id}</b>\n\n👤 <b>کاربر:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>اشتراک:</b> {subscription}\n\n💬 <b>پیام:</b>\n{message}")
+	content.Support.CustomerReplyText = localized(content.Support.CustomerReplyText, "📩 <b>Обращение #{ticket_id}</b>\nПолучен новый ответ от пользователя.\n\n👤 <b>Пользователь:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>Подписка:</b> {subscription}\n\n{message}", "📩 <b>Ticket #{ticket_id}</b>\nA new reply was received from the user.\n\n👤 <b>User:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>Subscription:</b> {subscription}\n\n{message}", "📩 <b>درخواست #{ticket_id}</b>\nپاسخ جدیدی از کاربر دریافت شد.\n\n👤 <b>کاربر:</b> {name}\n🔗 <b>Username:</b> {username}\n💎 <b>اشتراک:</b> {subscription}\n\n{message}")
+	content.Support.AdminReplyText = localized(content.Support.AdminReplyText, "📬 <b>Обращение #{ticket_id}</b>\nПоддержка ответила на ваше сообщение.\n\n{message}", "📬 <b>Ticket #{ticket_id}</b>\nSupport replied to your message.\n\n{message}", "📬 <b>درخواست #{ticket_id}</b>\nپشتیبانی به پیام شما پاسخ داد.\n\n{message}")
+	content.Support.ClosedText = localized(content.Support.ClosedText, "💌 <b>Обращение #{ticket_id} закрыто.</b>\nИстория переписки доступна в Mini app.", "💌 <b>Ticket #{ticket_id} is closed.</b>\nThe conversation remains available in the Mini App.", "💌 <b>درخواست #{ticket_id} بسته شد.</b>\nتاریخچه گفت‌وگو در Mini App در دسترس است.")
+	content.Support.OpenButton.Text = localized(content.Support.OpenButton.Text, "Открыть Mini app", "Open Mini App", "باز کردن Mini App")
+	return content
+}
+
+func LocalizeMaintenanceDefaults(settings MaintenanceSettings, language string) MaintenanceSettings {
+	language = normalizeRuntimeLanguage(language)
+	localized := func(current, ru, en, fa string) string {
+		current = strings.TrimSpace(current)
+		if current != "" && current != ru && current != en && current != fa {
+			return current
+		}
+		if language == "fa" {
+			return fa
+		}
+		if language == "en" {
+			return en
+		}
+		return ru
+	}
+	settings.TitleRU = "Технические работы"
+	settings.TextRU = localized(settings.TextRU, "Сервис временно недоступен. Попробуйте немного позже.", "The service is temporarily unavailable. Please try again later.", "سرویس موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید.")
+	settings.ReasonRU = localized(settings.ReasonRU, "Плановые работы", "Scheduled maintenance", "تعمیرات برنامه‌ریزی‌شده")
+	return settings
+}
+
+func premiumPaymentNotificationTemplate() string {
+	return `<tg-emoji emoji-id="5258204546391351475">☺️</tg-emoji> <b>Оплата:</b> <b>{{price}}</b>
+
+<tg-emoji emoji-id="5226513232549664618">☺️</tg-emoji> <b>Тариф:</b> <b>{{sub}}</b>
+<tg-emoji emoji-id="5226513232549664618">☺️</tg-emoji> <b>Доп. устройства:</b> <b>{{device}}</b>
+<b>Доп. трафик:</b> <b>{{traffic}}</b>
+<tg-emoji emoji-id="5258073068852485953">☺️</tg-emoji> <b>Telegram:</b> <b>{{username}}</b>
+<tg-emoji emoji-id="5258419835922030550">☺️</tg-emoji> <b>Время:</b> <b>{{data}}</b>
+<tg-emoji emoji-id="5258096772776991776">☺️</tg-emoji> <b>Способ:</b> <b>{{integration}}</b>
+🏷 <b>Промокод:</b> <b>{{promo}}</b>
+<tg-emoji emoji-id="5258389041006518073">☺️</tg-emoji> <b>Заказ:</b> <code>{{number}}</code>`
+}
+
+func defaultDevicePacks() []DevicePackSettings {
+	return []DevicePackSettings{
+		{ID: "devices_1", Enabled: true, Devices: 1, PriceRub: 49, PriceStars: planbook.StarsForRub(49)},
+		{ID: "devices_3", Enabled: true, Devices: 3, PriceRub: 119, PriceStars: planbook.StarsForRub(119)},
+		{ID: "devices_5", Enabled: true, Devices: 5, PriceRub: 179, PriceStars: planbook.StarsForRub(179), Wide: true},
+	}
+}
+
+func defaultPlans() []PlanSettings {
+	return []PlanSettings{}
+}
+
+func uuidMapStrings(values map[uuid.UUID]uuid.UUID) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		if value != uuid.Nil {
+			result = append(result, value.String())
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func uuidString(value uuid.UUID) string {
+	if value == uuid.Nil {
+		return ""
+	}
+	return value.String()
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func defaultLayoutElements() []LayoutElement {
+	profileGroups := map[string]string{
+		"server_status": "main", "media": "main", "news": "main",
+		"payments": "purchases", "gift": "purchases",
+		"referrals": "programs", "reviews": "programs",
+		"terms": "help", "privacy": "help",
+		"login_methods": "account", "web_version": "account", "pwa_install": "account",
+	}
+	definitions := []struct {
+		area   string
+		ids    []string
+		width  int
+		height int
+		align  string
+		framed bool
+	}{
+		{"buy", []string{"plans", "checkout"}, 100, 220, "left", false},
+		{"support", []string{"actions", "tabs", "tickets"}, 100, 92, "left", false},
+		{"profile", []string{"server_status", "gift", "payments", "referrals", "reviews", "media", "login_methods", "news", "web_version", "pwa_install", "terms", "privacy"}, 100, 48, "left", true},
+		{"navigation", []string{"dashboard", "buy", "support", "settings", "admin"}, 44, 38, "center", true},
+	}
+
+	result := make([]LayoutElement, 0, 56)
+	for _, group := range definitions {
+		for order, id := range group.ids {
+			height := group.height
+			if group.area == "dashboard" && id == "brand" {
+				height = 150
+			}
+			if group.area == "dashboard" && id == "actions" {
+				height = 92
+			}
+			if group.area == "buy" && id == "plans" {
+				height = 330
+			}
+			if group.area == "buy" && id == "checkout" {
+				height = 250
+			}
+			if group.area == "support" && id == "tabs" {
+				height = 44
+			}
+			if group.area == "support" && id == "tickets" {
+				height = 220
+			}
+			result = append(result, LayoutElement{
+				ID: id, Area: group.area, Order: order, Visible: true,
+				Width: float64(group.width), Height: height, Framed: group.framed, Align: group.align,
+				Group: profileGroups[id],
+			})
+		}
+	}
+
+	details := []LayoutElement{
+		{ID: "subscription_switcher", Area: "dashboard", Order: 0, Visible: true, Width: 36, Height: 38, Align: "center"},
+		{ID: "logo", Area: "dashboard", Order: 10, Visible: true, Width: 60, Height: 150, Align: "center"},
+		{ID: "username", Area: "dashboard", Order: 11, Visible: true, Width: 100, Height: 28, Align: "center"},
+		{ID: "plan_name", Area: "dashboard", Order: 12, Visible: true, Width: 48, Height: 32, Align: "left"},
+		{ID: "expires", Area: "dashboard", Order: 13, Visible: true, Width: 48, Height: 32, Align: "right"},
+		{ID: "traffic", Area: "dashboard", Order: 14, Visible: true, Width: 48, Height: 36, Align: "left"},
+		{ID: "devices", Area: "dashboard", Order: 15, Visible: true, Width: 48, Height: 36, Align: "right"},
+		{ID: "primary_action", Area: "dashboard", Order: 16, Visible: true, Width: 100, Height: 44, Align: "center"},
+		{ID: "secondary_action", Area: "dashboard", Order: 17, Visible: true, Width: 100, Height: 44, Align: "center"},
+		{ID: "promo_widget", Area: "dashboard", Order: 18, Visible: false, Width: 42, Height: 92, Align: "center", IconBubble: boolPointer(true)},
+		{ID: "notification_widget", Area: "dashboard", Order: 19, Visible: false, Width: 42, Height: 92, Align: "center", IconBubble: boolPointer(true)},
+		{ID: "plan_1m", Area: "buy", Order: 10, Visible: true, Width: 100, Height: 112, Align: "left"},
+		{ID: "plan_1m_unlimited", Area: "buy", Order: 11, Visible: true, Width: 100, Height: 112, Align: "left"},
+		{ID: "plan_3m", Area: "buy", Order: 12, Visible: true, Width: 100, Height: 112, Align: "left"},
+		{ID: "plan_3m_unlimited", Area: "buy", Order: 13, Visible: true, Width: 100, Height: 112, Align: "left"},
+		{ID: "plan_6m", Area: "buy", Order: 14, Visible: true, Width: 100, Height: 112, Align: "left"},
+		{ID: "plan_6m_unlimited", Area: "buy", Order: 15, Visible: true, Width: 100, Height: 112, Align: "left"},
+		{ID: "plan_12m", Area: "buy", Order: 16, Visible: true, Width: 100, Height: 92, Align: "left"},
+		{ID: "summary", Area: "buy", Order: 20, Visible: true, Width: 100, Height: 72, Align: "left"},
+		{ID: "payment", Area: "buy", Order: 21, Visible: true, Width: 100, Height: 64, Align: "left"},
+		{ID: "promo", Area: "buy", Order: 22, Visible: true, Width: 100, Height: 72, Align: "left"},
+		{ID: "pay_button", Area: "buy", Order: 23, Visible: true, Width: 100, Height: 44, Align: "left"},
+		{ID: "new_ticket", Area: "support", Order: 10, Visible: true, Width: 100, Height: 64, Align: "left"},
+		{ID: "faq", Area: "support", Order: 11, Visible: true, Width: 100, Height: 64, Align: "left"},
+		{ID: "tabs_detail", Area: "support", Order: 12, Visible: true, Width: 100, Height: 44, Align: "left"},
+		{ID: "tickets_detail", Area: "support", Order: 13, Visible: true, Width: 100, Height: 220, Align: "left"},
+		{ID: "group_main", Area: "profile", Order: 20, Visible: true, Width: 100, Height: 28, Align: "left"},
+		{ID: "group_purchases", Area: "profile", Order: 21, Visible: true, Width: 100, Height: 28, Align: "left"},
+		{ID: "group_programs", Area: "profile", Order: 22, Visible: true, Width: 100, Height: 28, Align: "left"},
+		{ID: "group_help", Area: "profile", Order: 23, Visible: true, Width: 100, Height: 28, Align: "left"},
+		{ID: "group_account", Area: "profile", Order: 24, Visible: true, Width: 100, Height: 28, Align: "left"},
+	}
+	result = append(result, details...)
+	for index := range result {
+		if result[index].Area != "dashboard" {
+			continue
+		}
+		result[index].TextScale = 100
+		result[index].CornerRadius = defaultDashboardCornerRadius(result[index].ID)
+	}
+	return result
+}
+
+func defaultDashboardCornerRadius(id string) int {
+	switch {
+	case id == "subscription_switcher":
+		return 15
+	case id == "primary_action" || id == "secondary_action" || id == "traffic" || id == "devices":
+		return 22
+	case id == "promo_widget" || id == "notification_widget":
+		return 10
+	case strings.HasPrefix(id, "empty_card_"):
+		return 14
+	case bannerIDPattern.MatchString(id):
+		return 16
+	default:
+		return 0
+	}
+}
+
+func (s *Service) Snapshot() Settings {
+	current, _ := s.value.Load().(Settings)
+	return cloneSettings(current)
+}
+
+func (s *Service) Language() string {
+	return s.Snapshot().Localization.Language
+}
+
+func (s *Service) FontFamily() string {
+	return s.Snapshot().Localization.FontFamily
+}
+
+func (s *Service) Update(ctx context.Context, next Settings, updatedBy int64) (Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateLocked(ctx, next, updatedBy)
+}
+
+// UpdateFields merges a permitted settings section into the latest snapshot
+// under the same lock as persistence, preserving edits made by other admins.
+func (s *Service) UpdateFields(ctx context.Context, next Settings, fields []string, updatedBy int64) (Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	merged, err := MergeSettingsFields(s.Snapshot(), next, fields)
+	if err != nil {
+		return Settings{}, err
+	}
+	return s.updateLocked(ctx, merged, updatedBy)
+}
+
+func MergeSettingsFields(current, next Settings, fields []string) (Settings, error) {
+	baseRaw, err := json.Marshal(current)
+	if err != nil {
+		return Settings{}, err
+	}
+	nextRaw, err := json.Marshal(next)
+	if err != nil {
+		return Settings{}, err
+	}
+	var base, incoming map[string]json.RawMessage
+	if err := json.Unmarshal(baseRaw, &base); err != nil {
+		return Settings{}, err
+	}
+	if err := json.Unmarshal(nextRaw, &incoming); err != nil {
+		return Settings{}, err
+	}
+	for _, field := range fields {
+		value, ok := incoming[field]
+		if !ok || field == "version" || field == "hiddenServerNodes" || field == "reviewRewards" {
+			return Settings{}, fmt.Errorf("invalid settings field: %s", field)
+		}
+		base[field] = value
+	}
+	raw, err := json.Marshal(base)
+	if err != nil {
+		return Settings{}, err
+	}
+	var merged Settings
+	err = json.Unmarshal(raw, &merged)
+	return merged, err
+}
+
+func (s *Service) updateLocked(ctx context.Context, next Settings, updatedBy int64) (Settings, error) {
+	current := s.Snapshot()
+	// The server controls save independently from the appearance editor. A stale
+	// editor draft must not restore an older visibility list.
+	next.HiddenServerNodes = current.HiddenServerNodes
+	next.ReviewRewards = current.ReviewRewards
+	if err := NormalizeAndValidate(&next); err != nil {
+		return Settings{}, err
+	}
+	if err := s.normalizePremiumEmoji(ctx, &next); err != nil {
+		return Settings{}, err
+	}
+	stampLegalDocumentChanges(&next, current, time.Now().UTC())
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return Settings{}, fmt.Errorf("encode runtime settings: %w", err)
+	}
+	if err := s.repository.Save(ctx, raw, updatedBy); err != nil {
+		return Settings{}, fmt.Errorf("save runtime settings: %w", err)
+	}
+	s.value.Store(next)
+	return cloneSettings(next), nil
+}
+
+func stampLegalDocumentChanges(next *Settings, current Settings, now time.Time) {
+	for _, id := range []string{"terms", "privacy"} {
+		document, ok := next.Content.LegalDocuments[id]
+		if !ok {
+			continue
+		}
+		previous, hadPrevious := current.Content.LegalDocuments[id]
+		document.ModifiedAt = previous.ModifiedAt
+		if !hadPrevious || !reflect.DeepEqual(document, previous) {
+			document.ModifiedAt = now.Format(time.RFC3339)
+		}
+		next.Content.LegalDocuments[id] = document
+	}
+}
+
+func (s *Service) SetServerNodeHidden(ctx context.Context, id string, hidden bool, updatedBy int64) error {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" || len(id) > 256 || strings.ContainsAny(id, "\r\n\t") {
+		return errors.New("invalid server node id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.Snapshot()
+	ids := make([]string, 0, len(next.HiddenServerNodes)+1)
+	for _, existing := range next.HiddenServerNodes {
+		if existing != id {
+			ids = append(ids, existing)
+		}
+	}
+	if hidden {
+		ids = append(ids, id)
+	}
+	next.HiddenServerNodes = ids
+	if err := NormalizeAndValidate(&next); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return fmt.Errorf("encode server visibility: %w", err)
+	}
+	if err := s.repository.Save(ctx, raw, updatedBy); err != nil {
+		return fmt.Errorf("save server visibility: %w", err)
+	}
+	s.value.Store(next)
+	return nil
+}
+
+func (s *Service) FeatureEnabled(name string) bool {
+	settings := s.Snapshot()
+	enabled, ok := settings.Features[name]
+	return ok && enabled
+}
+
+func (s *Service) Maintenance() MaintenanceSettings {
+	return s.Snapshot().Maintenance
+}
+
+func (s *Service) TrialSettings() TrialSettings {
+	return s.Snapshot().Trial
+}
+
+func (s *Service) GraceSettings() GraceSettings {
+	return s.Snapshot().Grace
+}
+
+func (s *Service) StartText(locale, fallback string) string {
+	locale = s.Language()
+	content := s.Snapshot().Content
+	if locale == "ru" {
+		if value := strings.TrimSpace(content.StartTextRU); value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
+func (s *Service) StartImage(fallback string) string {
+	if value := strings.TrimSpace(s.Snapshot().Content.StartImage); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func (s *Service) ContentText(locale, key, fallback string) string {
+	settings := s.Snapshot()
+	locale = settings.Localization.Language
+	if values := settings.Content.Copy[locale]; values != nil {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
+func NormalizeTelegramCustomEmojiID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	matches := customEmojiTagPattern.FindAllStringSubmatch(value, -1)
+	if len(matches) > 1 {
+		return "", errors.New("only one premium emoji is allowed for a button")
+	}
+	if len(matches) == 1 {
+		value = matches[0][1]
+	}
+	if !customEmojiIDPattern.MatchString(value) {
+		return "", errors.New("invalid premium emoji ID for a button")
+	}
+	return value, nil
+}
+
+func NormalizeTelegramButtonStyle(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", "primary", "success", "danger":
+		return value, nil
+	default:
+		return "", errors.New("invalid Telegram button color")
+	}
+}
+
+func (s *Service) Link(name, fallback string) string {
+	if value := strings.TrimSpace(s.Snapshot().Content.Links[name]); value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func FeatureNames() []string {
+	return append([]string(nil), featureOrder...)
+}
+
+func NormalizeAndValidate(settings *Settings) error {
+	if settings == nil {
+		return errors.New("settings are required")
+	}
+	defaults := DefaultSettings()
+	if err := NormalizeInteractive(&settings.Interactive); err != nil {
+		return err
+	}
+	previousVersion := settings.Version
+	if err := ValidateTorrentSettings(&settings.Torrents); err != nil {
+		return err
+	}
+	settings.Version = CurrentVersion
+	if settings.NodeMonitor.OfflineMinutes == 0 {
+		settings.NodeMonitor.OfflineMinutes = defaults.NodeMonitor.OfflineMinutes
+	}
+	if settings.NodeMonitor.OfflineMinutes < 1 || settings.NodeMonitor.OfflineMinutes > 1440 {
+		return errors.New("node downtime must be between 1 and 1440 minutes")
+	}
+	if previousVersion < 27 && settings.ReviewRewards == (ReviewRewardSettings{}) {
+		settings.ReviewRewards = defaults.ReviewRewards
+	}
+	if err := settings.ReviewRewards.Validate(); err != nil {
+		return err
+	}
+	if err := normalizePaymentVariants(settings); err != nil {
+		return err
+	}
+	if err := normalizePaymentMethodText(settings); err != nil {
+		return err
+	}
+	if len(settings.HiddenServerNodes) > 512 {
+		return errors.New("too many hidden server nodes")
+	}
+	hiddenNodes := make([]string, 0, len(settings.HiddenServerNodes))
+	seenHiddenNodes := make(map[string]struct{}, len(settings.HiddenServerNodes))
+	for _, id := range settings.HiddenServerNodes {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" || len(id) > 256 || strings.ContainsAny(id, "\r\n\t") {
+			return errors.New("invalid hidden server node id")
+		}
+		if _, exists := seenHiddenNodes[id]; !exists {
+			seenHiddenNodes[id] = struct{}{}
+			hiddenNodes = append(hiddenNodes, id)
+		}
+	}
+	sort.Strings(hiddenNodes)
+	settings.HiddenServerNodes = hiddenNodes
+
+	if settings.Features == nil {
+		settings.Features = map[string]bool{}
+	}
+	for _, name := range featureOrder {
+		if _, ok := settings.Features[name]; !ok {
+			settings.Features[name] = defaults.Features[name]
+		}
+	}
+	for name := range settings.Features {
+		if !contains(featureOrder, name) {
+			delete(settings.Features, name)
+		}
+	}
+
+	if err := validateLocalization(&settings.Localization, defaults.Localization); err != nil {
+		return err
+	}
+	settings.Content = LocalizeTelegramDefaults(settings.Content, settings.Localization.Language)
+	settings.Maintenance = LocalizeMaintenanceDefaults(settings.Maintenance, settings.Localization.Language)
+	normalizeMaintenance(&settings.Maintenance, defaults.Maintenance)
+	if err := validateContent(&settings.Content, defaults.Content, previousVersion < 20); err != nil {
+		return err
+	}
+	ensureCustomProfileLayout(&settings.Layout, settings.Content.CustomLinks)
+	if err := validateAppearance(&settings.Appearance, defaults.Appearance, previousVersion < 20); err != nil {
+		return err
+	}
+	if err := validateLayout(&settings.Layout, defaults.Layout, previousVersion < 21); err != nil {
+		return err
+	}
+	if err := validateSubPage(&settings.SubPage, defaults.SubPage, previousVersion < 22); err != nil {
+		return err
+	}
+	if err := validatePlans(&settings.Plans, defaults.Plans); err != nil {
+		return err
+	}
+	if previousVersion < 12 && len(settings.DevicePacks) == 0 {
+		settings.DevicePacks = append([]DevicePackSettings(nil), defaults.DevicePacks...)
+	}
+	if err := validateDevicePacks(&settings.DevicePacks); err != nil {
+		return err
+	}
+	if err := validateTrafficPacks(&settings.TrafficPacks); err != nil {
+		return err
+	}
+	if previousVersion < 24 && settings.DeviceAccess == (DeviceAccessSettings{}) {
+		settings.DeviceAccess = defaults.DeviceAccess
+	}
+	if settings.DeviceAccess.ReminderDays < 0 || settings.DeviceAccess.ReminderDays > 30 {
+		return errors.New("device reminder days must be between 0 and 30")
+	}
+	settings.DeviceAccess.PurchaseTemplate = normalizedRequiredText(settings.DeviceAccess.PurchaseTemplate, defaults.DeviceAccess.PurchaseTemplate, 3500)
+	settings.DeviceAccess.ReminderTemplate = normalizedRequiredText(settings.DeviceAccess.ReminderTemplate, defaults.DeviceAccess.ReminderTemplate, 3500)
+	settings.DeviceAccess.ExpiryTemplate = normalizedRequiredText(settings.DeviceAccess.ExpiryTemplate, defaults.DeviceAccess.ExpiryTemplate, 3500)
+	if err := validateTrial(&settings.Trial, defaults.Trial, previousVersion < CurrentVersion); err != nil {
+		return err
+	}
+	if previousVersion < 17 && settings.Referrals == (ReferralSettings{}) {
+		settings.Referrals = defaults.Referrals
+	}
+	if err := validateReferrals(&settings.Referrals); err != nil {
+		return err
+	}
+	if err := validateGrace(&settings.Grace); err != nil {
+		return err
+	}
+	if err := validatePanel(&settings.Panel, defaults.Panel); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizePaymentMethodText(settings *Settings) error {
+	clean := make(map[string]PaymentMethodText, len(settings.PaymentMethodText))
+	for id, text := range settings.PaymentMethodText {
+		if settings.PaymentMethodBase(id) == "" {
+			return fmt.Errorf("unknown payment method: %s", id)
+		}
+		text.Name = strings.TrimSpace(text.Name)
+		text.Description = strings.TrimSpace(text.Description)
+		text.LogoURL = strings.TrimSpace(text.LogoURL)
+		if !ValidPaymentLogoURL(text.LogoURL) {
+			return fmt.Errorf("payment method %s: use an HTTPS image URL or an uploaded logo", id)
+		}
+		if text.HideLogo {
+			text.LogoURL = ""
+		}
+		if utf8.RuneCountInString(text.Name) > 80 || utf8.RuneCountInString(text.Description) > 240 {
+			return fmt.Errorf("payment method %s: name must be at most 80 characters and description at most 240", id)
+		}
+		if text.Name != "" || text.Description != "" || text.LogoURL != "" || text.HideLogo {
+			clean[id] = text
+		}
+	}
+	settings.PaymentMethodText = clean
+	return nil
+}
+
+func normalizePaymentMethodOrder(order []string) []string {
+	seen := make(map[string]bool, len(defaultPaymentMethodOrder))
+	normalized := make([]string, 0, len(defaultPaymentMethodOrder))
+	for _, method := range append(append([]string(nil), order...), defaultPaymentMethodOrder...) {
+		method = strings.ToLower(strings.TrimSpace(method))
+		if contains(defaultPaymentMethodOrder, method) && !seen[method] {
+			seen[method] = true
+			normalized = append(normalized, method)
+		}
+	}
+	return normalized
+}
+
+func validateLocalization(value *LocalizationSettings, defaults LocalizationSettings) error {
+	value.Language = strings.ToLower(strings.TrimSpace(value.Language))
+	if value.Language == "" {
+		value.Language = defaults.Language
+	}
+	switch value.Language {
+	case "ru", "en", "fa":
+	default:
+		return errors.New("language must be one of: ru, en, fa")
+	}
+
+	value.FontFamily = strings.ToLower(strings.TrimSpace(value.FontFamily))
+	if value.FontFamily == "" {
+		value.FontFamily = defaults.FontFamily
+	}
+	switch value.FontFamily {
+	case "auto", "montserrat", "vazir":
+	default:
+		return errors.New("font family must be one of: auto, montserrat, vazir")
+	}
+	value.FontFamilyRU = strings.ToLower(strings.TrimSpace(value.FontFamilyRU))
+	if value.FontFamilyRU == "" {
+		value.FontFamilyRU = defaults.FontFamilyRU
+	}
+	switch value.FontFamilyRU {
+	case "montserrat", "golos", "rubik", "manrope", "onest":
+	default:
+		return errors.New("Russian font family is unsupported")
+	}
+	value.FontFamilyEN = strings.ToLower(strings.TrimSpace(value.FontFamilyEN))
+	if value.FontFamilyEN == "" {
+		value.FontFamilyEN = defaults.FontFamilyEN
+	}
+	switch value.FontFamilyEN {
+	case "inter", "dmsans", "jakarta", "outfit", "spacegrotesk":
+	default:
+		return errors.New("English font family is unsupported")
+	}
+	return nil
+}
+
+func ensureCustomProfileLayout(layout *LayoutSettings, links []CustomLink) {
+	if layout == nil || len(links) == 0 {
+		return
+	}
+	present := make(map[string]bool, len(layout.Elements))
+	nextOrder := 0
+	for _, item := range defaultLayoutElements() {
+		if item.Area == "profile" && item.Order >= nextOrder {
+			nextOrder = item.Order + 1
+		}
+	}
+	for _, item := range layout.Elements {
+		if item.Area != "profile" {
+			continue
+		}
+		present[item.ID] = true
+		if item.Order >= nextOrder {
+			nextOrder = item.Order + 1
+		}
+	}
+	for _, link := range links {
+		id := "custom." + link.ID
+		if present[id] {
+			continue
+		}
+		layout.Elements = append(layout.Elements, LayoutElement{
+			ID:      id,
+			Area:    "profile",
+			Order:   nextOrder,
+			Visible: true,
+			Width:   100,
+			Height:  48,
+			Framed:  true,
+			Align:   "left",
+			Group:   "main",
+		})
+		present[id] = true
+		nextOrder++
+	}
+}
+
+func normalizeMaintenance(value *MaintenanceSettings, defaults MaintenanceSettings) {
+	value.TitleRU = "Технические работы"
+	if strings.TrimSpace(value.TextRU) == "" {
+		value.TextRU = defaults.TextRU
+	}
+	if strings.TrimSpace(value.ReasonRU) == "" {
+		value.ReasonRU = defaults.ReasonRU
+	}
+	value.TextRU = limit(value.TextRU, 600)
+	value.ReasonRU = limit(value.ReasonRU, 180)
+}
+
+func validateContent(value *ContentSettings, defaults ContentSettings, legacy bool) error {
+	value.BrandName = strings.TrimSpace(value.BrandName)
+	if value.BrandName == "" {
+		value.BrandName = defaults.BrandName
+	}
+	value.BrandName = limit(value.BrandName, 80)
+	value.AdminContact = strings.TrimSpace(value.AdminContact)
+	if value.AdminContact != "" {
+		value.AdminContact = strings.TrimPrefix(value.AdminContact, "https://t.me/")
+		value.AdminContact = strings.TrimPrefix(value.AdminContact, "http://t.me/")
+		value.AdminContact = strings.TrimPrefix(value.AdminContact, "@")
+		if !telegramUserPattern.MatchString(value.AdminContact) {
+			return errors.New("admin contact must be a Telegram username")
+		}
+		value.AdminContact = "@" + value.AdminContact
+	}
+	value.LogoURL = strings.TrimSpace(value.LogoURL)
+	if value.LogoURL == "" {
+		value.LogoURL = defaults.LogoURL
+	}
+	if !isSafeAssetURL(value.LogoURL) {
+		return errors.New("logo must be an HTTPS URL or local /mini-app path")
+	}
+	value.WebPage.Title = strings.TrimSpace(value.WebPage.Title)
+	if value.WebPage.Title == "" {
+		value.WebPage.Title = defaults.WebPage.Title
+	}
+	value.WebPage.Title = limit(value.WebPage.Title, 120)
+	value.WebPage.Description = strings.TrimSpace(value.WebPage.Description)
+	if value.WebPage.Description == "" {
+		value.WebPage.Description = defaults.WebPage.Description
+	}
+	value.WebPage.Description = limit(value.WebPage.Description, 240)
+	value.WebPage.FaviconURL = strings.TrimSpace(value.WebPage.FaviconURL)
+	if value.WebPage.FaviconURL == "" {
+		value.WebPage.FaviconURL = defaults.WebPage.FaviconURL
+	}
+	if !isSafeAssetURL(value.WebPage.FaviconURL) {
+		return errors.New("favicon must be an HTTPS URL or local /mini-app path")
+	}
+	value.StartTextRU = limit(strings.TrimSpace(value.StartTextRU), 3500)
+	value.StartImage = strings.TrimSpace(value.StartImage)
+	if value.StartImage != "" && !isSafeAssetURL(value.StartImage) {
+		return errors.New("start image must be an HTTPS URL or local /mini-app path")
+	}
+
+	if value.Copy == nil {
+		value.Copy = map[string]map[string]string{"ru": {}}
+	}
+	if value.Copy["ru"] == nil {
+		value.Copy["ru"] = map[string]string{}
+	}
+	if len(value.Copy["ru"]) > 500 {
+		return errors.New("too many ru content overrides")
+	}
+	cleanCopy := make(map[string]string, len(value.Copy["ru"])+len(defaults.Copy["ru"]))
+	for key, text := range value.Copy["ru"] {
+		key = strings.TrimSpace(key)
+		if !contentKeyPattern.MatchString(key) {
+			return fmt.Errorf("invalid content key %q", key)
+		}
+		cleanCopy[key] = limit(strings.TrimSpace(text), 3500)
+	}
+	if legacy {
+		for key, text := range defaults.Copy["ru"] {
+			if _, exists := cleanCopy[key]; !exists {
+				cleanCopy[key] = text
+			}
+		}
+	}
+	if legacy && cleanCopy["setup"] == "Установить и настроить" {
+		cleanCopy["setup"] = "Подключиться"
+	}
+	value.Copy = map[string]map[string]string{"ru": cleanCopy}
+
+	if value.FAQ == nil {
+		value.FAQ = map[string][]FAQItem{"ru": {}}
+	}
+	items := value.FAQ["ru"]
+	if len(items) > 100 {
+		return errors.New("too many ru FAQ items")
+	}
+	cleanFAQ := make([]FAQItem, 0, len(items))
+	for _, item := range items {
+		item.Question = limit(strings.TrimSpace(item.Question), 300)
+		item.Answer = limit(strings.TrimSpace(item.Answer), 3000)
+		if item.Question == "" || item.Answer == "" {
+			continue
+		}
+		cleanFAQ = append(cleanFAQ, item)
+	}
+	value.FAQ = map[string][]FAQItem{"ru": cleanFAQ}
+
+	buttonEmojiID, err := NormalizeTelegramCustomEmojiID(value.SubscriptionReminderButton.IconCustomEmojiID)
+	if err != nil {
+		return err
+	}
+	buttonStyle, err := NormalizeTelegramButtonStyle(value.SubscriptionReminderButton.Style)
+	if err != nil {
+		return err
+	}
+	value.SubscriptionReminderButton.IconCustomEmojiID = buttonEmojiID
+	value.SubscriptionReminderButton.Style = buttonStyle
+
+	if err := normalizeTelegramContent(value, defaults, legacy); err != nil {
+		return err
+	}
+
+	if value.Links == nil {
+		value.Links = map[string]string{}
+	}
+	allowedLinks := map[string]bool{"support": true, "channel": true}
+	for _, name := range []string{"support", "channel"} {
+		link := strings.TrimSpace(value.Links[name])
+		if legacy && link == "" {
+			link = defaults.Links[name]
+		}
+		if link != "" && !isSafeWebURL(link) {
+			return fmt.Errorf("invalid %s URL", name)
+		}
+		value.Links[name] = link
+	}
+	for name := range value.Links {
+		if !allowedLinks[name] {
+			delete(value.Links, name)
+		}
+	}
+
+	allowedProfileButtons := map[string]bool{
+		"server_status": true,
+		"payments":      true,
+		"gift":          true,
+		"reviews":       true,
+		"referrals":     true,
+		"media":         true,
+		"login_methods": true,
+		"news":          true,
+		"web_version":   true,
+		"pwa_install":   true,
+		"terms":         true,
+		"privacy":       true,
+	}
+	if value.ProfileButtons == nil {
+		value.ProfileButtons = map[string]ProfileButtonSettings{}
+	}
+	cleanProfileButtons := make(map[string]ProfileButtonSettings, len(value.ProfileButtons))
+	for rawID, item := range value.ProfileButtons {
+		id := strings.ToLower(strings.TrimSpace(rawID))
+		if !allowedProfileButtons[id] {
+			return fmt.Errorf("invalid profile button %q", rawID)
+		}
+		item.LabelRU = limit(strings.TrimSpace(item.LabelRU), 80)
+		item.HintRU = limit(strings.TrimSpace(item.HintRU), 160)
+		item.URL = strings.TrimSpace(item.URL)
+		if item.URL != "" {
+			if !contains([]string{"web_version", "pwa_install"}, id) {
+				item.URL = ""
+			} else if !isSafeWebURL(item.URL) {
+				return fmt.Errorf("invalid profile button URL for %q", id)
+			}
+		}
+		cleanProfileButtons[id] = item
+	}
+	value.ProfileButtons = cleanProfileButtons
+
+	if value.LegalDocuments == nil {
+		value.LegalDocuments = map[string]LegalDocumentSettings{}
+	}
+	cleanDocuments := make(map[string]LegalDocumentSettings, 2)
+	for _, id := range []string{"terms", "privacy"} {
+		document, ok := value.LegalDocuments[id]
+		if !ok {
+			continue
+		}
+		cleanDocuments[id] = normalizeLegalDocument(document, map[string]string{
+			"terms":   "Пользовательское соглашение",
+			"privacy": "Политика конфиденциальности",
+		}[id])
+	}
+	value.LegalDocuments = cleanDocuments
+
+	if len(value.CustomLinks) > 20 {
+		return errors.New("too many custom profile buttons")
+	}
+	seen := map[string]bool{}
+	cleanLinks := make([]CustomLink, 0, len(value.CustomLinks))
+	for _, item := range value.CustomLinks {
+		item.ID = strings.ToLower(strings.TrimSpace(item.ID))
+		if !elementIDPattern.MatchString(item.ID) || seen[item.ID] {
+			return fmt.Errorf("invalid or duplicate custom link id %q", item.ID)
+		}
+		seen[item.ID] = true
+		item.LabelRU = limit(strings.TrimSpace(item.LabelRU), 80)
+		item.HintRU = limit(strings.TrimSpace(item.HintRU), 160)
+		item.URL = strings.TrimSpace(item.URL)
+		item.Icon = limit(strings.TrimSpace(item.Icon), 40)
+		item.Type = strings.ToLower(strings.TrimSpace(item.Type))
+		if item.Type == "" {
+			if item.URL == "" {
+				item.Type = "page"
+			} else {
+				item.Type = "url"
+			}
+		}
+		if !contains([]string{"url", "page"}, item.Type) {
+			return fmt.Errorf("invalid custom profile button type for %q", item.ID)
+		}
+		if item.Type == "url" {
+			if !isSafeWebURL(item.URL) {
+				return fmt.Errorf("invalid custom profile button URL for %q", item.ID)
+			}
+			item.Document = LegalDocumentSettings{}
+		} else {
+			item.URL = ""
+			item.Document = normalizeLegalDocument(item.Document, item.LabelRU)
+		}
+		if item.LabelRU == "" {
+			return fmt.Errorf("custom profile button %q requires a label", item.ID)
+		}
+		cleanLinks = append(cleanLinks, item)
+	}
+	value.CustomLinks = cleanLinks
+	return nil
+}
+
+func normalizeLegalDocument(value LegalDocumentSettings, fallbackTitle string) LegalDocumentSettings {
+	if value.ModifiedAt != "" {
+		if _, err := time.Parse(time.RFC3339, value.ModifiedAt); err != nil {
+			value.ModifiedAt = ""
+		}
+	}
+	value.Title = limit(strings.TrimSpace(value.Title), 160)
+	if value.Title == "" {
+		value.Title = limit(strings.TrimSpace(fallbackTitle), 160)
+	}
+	value.EffectiveLabel = limit(strings.TrimSpace(value.EffectiveLabel), 100)
+	if value.EffectiveLabel == "" {
+		value.EffectiveLabel = "Дата вступления в силу"
+	}
+	value.Jurisdiction = limit(strings.TrimSpace(value.Jurisdiction), 300)
+	value.Intro = limit(strings.TrimSpace(value.Intro), 6000)
+	if len(value.Sections) > 30 {
+		value.Sections = value.Sections[:30]
+	}
+	sections := make([]LegalDocumentSection, 0, len(value.Sections))
+	for _, section := range value.Sections {
+		section.Title = limit(strings.TrimSpace(section.Title), 200)
+		section.Body = limit(strings.TrimSpace(section.Body), 12000)
+		if section.Title == "" && section.Body == "" {
+			continue
+		}
+		sections = append(sections, section)
+	}
+	value.Sections = sections
+	value.ContactTitle = limit(strings.TrimSpace(value.ContactTitle), 160)
+	value.Contacts = limit(strings.TrimSpace(value.Contacts), 3000)
+	value.Footer = limit(strings.TrimSpace(value.Footer), 500)
+	return value
+}
+
+func normalizeTelegramContent(value *ContentSettings, defaults ContentSettings, legacy bool) error {
+	if err := normalizeTelegramTrial(&value.Trial, defaults.Trial); err != nil {
+		return err
+	}
+	if legacy {
+		value.PaymentNotification = defaults.PaymentNotification
+		value.Gift = defaults.Gift
+	}
+	value.PaymentNotification.Text = normalizedRequiredText(value.PaymentNotification.Text, defaults.PaymentNotification.Text, 3500)
+	value.WithdrawalNotification.NewText = normalizedRequiredText(value.WithdrawalNotification.NewText, defaults.WithdrawalNotification.NewText, 2200)
+	value.WithdrawalNotification.ApprovedText = normalizedRequiredText(value.WithdrawalNotification.ApprovedText, defaults.WithdrawalNotification.ApprovedText, 2200)
+	value.WithdrawalNotification.RejectedText = normalizedRequiredText(value.WithdrawalNotification.RejectedText, defaults.WithdrawalNotification.RejectedText, 2200)
+	value.NodeNotification.DownText = normalizedRequiredText(value.NodeNotification.DownText, defaults.NodeNotification.DownText, 2200)
+	value.NodeNotification.UpText = normalizedRequiredText(value.NodeNotification.UpText, defaults.NodeNotification.UpText, 2200)
+	if err := normalizeTelegramButton(&value.WithdrawalNotification.ApproveButton, defaults.WithdrawalNotification.ApproveButton); err != nil {
+		return fmt.Errorf("withdrawal approve button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.WithdrawalNotification.RejectButton, defaults.WithdrawalNotification.RejectButton); err != nil {
+		return fmt.Errorf("withdrawal reject button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.PaymentNotification.OpenUserButton.TelegramButtonSettings, defaults.PaymentNotification.OpenUserButton.TelegramButtonSettings); err != nil {
+		return fmt.Errorf("payment notification open user button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.PaymentNotification.ProfileButton.TelegramButtonSettings, defaults.PaymentNotification.ProfileButton.TelegramButtonSettings); err != nil {
+		return fmt.Errorf("payment notification profile button: %w", err)
+	}
+	if err := NormalizeGiftMessageSettings(&value.Gift.Sender, defaults.Gift.Sender); err != nil {
+		return fmt.Errorf("gift sender message: %w", err)
+	}
+	if err := NormalizeGiftMessageSettings(&value.Gift.Recipient, defaults.Gift.Recipient); err != nil {
+		return fmt.Errorf("gift recipient message: %w", err)
+	}
+	value.Gift.Inline.PendingText = normalizedRequiredText(value.Gift.Inline.PendingText, defaults.Gift.Inline.PendingText, 1024)
+	value.Gift.Inline.Text = normalizedRequiredText(value.Gift.Inline.Text, defaults.Gift.Inline.Text, 1024)
+	value.Gift.Inline.PaymentText = normalizedRequiredText(value.Gift.Inline.PaymentText, defaults.Gift.Inline.PaymentText, 1024)
+	value.Gift.Inline.PayButtonText = normalizedRequiredText(value.Gift.Inline.PayButtonText, defaults.Gift.Inline.PayButtonText, 64)
+	value.Gift.Inline.ButtonText = normalizedRequiredText(value.Gift.Inline.ButtonText, defaults.Gift.Inline.ButtonText, 64)
+	value.Gift.Inline.BannerURL = strings.TrimSpace(value.Gift.Inline.BannerURL)
+	if value.Gift.Inline.BannerURL != "" && !(strings.HasPrefix(value.Gift.Inline.BannerURL, "https://") || strings.HasPrefix(value.Gift.Inline.BannerURL, "/mini-app/uploads/logo-")) {
+		return errors.New("inline gift banner URL must be HTTPS or an uploaded image")
+	}
+	if len(value.Gift.Inline.BannerURL) > 2048 {
+		return errors.New("inline gift banner URL is too long")
+	}
+	value.Gift.Inline.PreviewBannerURL = strings.TrimSpace(value.Gift.Inline.PreviewBannerURL)
+	if value.Gift.Inline.PreviewBannerURL != "" && !(strings.HasPrefix(value.Gift.Inline.PreviewBannerURL, "https://") || strings.HasPrefix(value.Gift.Inline.PreviewBannerURL, "/mini-app/uploads/logo-")) {
+		return errors.New("inline gift preview banner URL must be HTTPS or an uploaded image")
+	}
+	if len(value.Gift.Inline.PreviewBannerURL) > 2048 {
+		return errors.New("inline gift preview banner URL is too long")
+	}
+
+	value.Verification.Text = normalizedRequiredText(value.Verification.Text, defaults.Verification.Text, 3500)
+	value.Verification.CheckFailedText = normalizedRequiredText(value.Verification.CheckFailedText, defaults.Verification.CheckFailedText, 300)
+	value.Verification.NotSubscribedText = normalizedRequiredText(value.Verification.NotSubscribedText, defaults.Verification.NotSubscribedText, 300)
+	value.Verification.VerifiedText = normalizedRequiredText(value.Verification.VerifiedText, defaults.Verification.VerifiedText, 300)
+	if legacy && strings.TrimSpace(value.Verification.Banner) == "" {
+		value.Verification.Banner = defaults.Verification.Banner
+	}
+	if err := normalizeOptionalAsset(&value.Verification.Banner, "verification banner"); err != nil {
+		return err
+	}
+	if err := normalizeTelegramButton(&value.Verification.ChannelButton, defaults.Verification.ChannelButton); err != nil {
+		return fmt.Errorf("verification channel button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.Verification.ConfirmButton, defaults.Verification.ConfirmButton); err != nil {
+		return fmt.Errorf("verification confirm button: %w", err)
+	}
+	value.Verification.ChannelChatID = strings.TrimSpace(value.Verification.ChannelChatID)
+	if value.Verification.ChannelChatID != "" {
+		if _, ok := ParseTelegramChannelChatID(value.Verification.ChannelChatID); !ok {
+			return errors.New("verification channel chat ID must be @username or a numeric Telegram chat ID")
+		}
+	}
+
+	value.Support.NewTicketText = normalizedRequiredText(value.Support.NewTicketText, defaults.Support.NewTicketText, 3500)
+	value.Support.CustomerReplyText = normalizedRequiredText(value.Support.CustomerReplyText, defaults.Support.CustomerReplyText, 3500)
+	value.Support.AdminReplyText = normalizedRequiredText(value.Support.AdminReplyText, defaults.Support.AdminReplyText, 3500)
+	value.Support.ClosedText = normalizedRequiredText(value.Support.ClosedText, defaults.Support.ClosedText, 3500)
+	if err := normalizeTelegramButton(&value.Support.OpenButton, defaults.Support.OpenButton); err != nil {
+		return fmt.Errorf("support mini app button: %w", err)
+	}
+
+	if err := normalizeTelegramButton(&value.StartMenu.TrialButton, defaults.StartMenu.TrialButton); err != nil {
+		return fmt.Errorf("start trial button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.StartMenu.DashboardButton, defaults.StartMenu.DashboardButton); err != nil {
+		return fmt.Errorf("start dashboard button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.StartMenu.PlansButton, defaults.StartMenu.PlansButton); err != nil {
+		return fmt.Errorf("start plans button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.StartMenu.SupportButton, defaults.StartMenu.SupportButton); err != nil {
+		return fmt.Errorf("start support button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.StartMenu.NotificationsButton.TelegramButtonSettings, defaults.StartMenu.NotificationsButton.TelegramButtonSettings); err != nil {
+		return fmt.Errorf("start notifications button: %w", err)
+	}
+	if err := normalizeTelegramButton(&value.StartMenu.NotificationsOffButton, defaults.StartMenu.NotificationsOffButton); err != nil {
+		return err
+	}
+	if value.StartMenu.Buttons == nil {
+		value.StartMenu.Buttons = DefaultStartButtons(value.StartMenu)
+	}
+	if len(value.StartMenu.Buttons) > 30 {
+		return errors.New("too many start menu buttons")
+	}
+	seenStartButtons := map[string]bool{}
+	startRowCounts := map[int]int{}
+	for index := range value.StartMenu.Buttons {
+		button := &value.StartMenu.Buttons[index]
+		button.ID = strings.ToLower(strings.TrimSpace(button.ID))
+		button.Kind = strings.ToLower(strings.TrimSpace(button.Kind))
+		button.Target = strings.TrimSpace(button.Target)
+		button.Text = strings.TrimSpace(button.Text)
+		if !elementIDPattern.MatchString(button.ID) || seenStartButtons[button.ID] {
+			return fmt.Errorf("invalid or duplicate start button %q", button.ID)
+		}
+		seenStartButtons[button.ID] = true
+		if button.Row < 0 || button.Row > 29 {
+			return fmt.Errorf("invalid row for start button %q", button.ID)
+		}
+		startRowCounts[button.Row]++
+		if startRowCounts[button.Row] > 8 {
+			return fmt.Errorf("too many buttons in start menu row %d", button.Row+1)
+		}
+		if utf8.RuneCountInString(button.Text) < 1 || utf8.RuneCountInString(button.Text) > 64 {
+			return fmt.Errorf("invalid text for start button %q", button.ID)
+		}
+		var err error
+		button.IconCustomEmojiID, err = NormalizeTelegramCustomEmojiID(button.IconCustomEmojiID)
+		if err != nil {
+			return fmt.Errorf("start button %q: %w", button.ID, err)
+		}
+		button.Style, err = NormalizeTelegramButtonStyle(button.Style)
+		if err != nil {
+			return fmt.Errorf("start button %q: %w", button.ID, err)
+		}
+		switch button.Kind {
+		case "page":
+			validCustomPage := false
+			if strings.HasPrefix(button.Target, "custom-page:") {
+				id := strings.TrimPrefix(button.Target, "custom-page:")
+				for _, link := range value.CustomLinks {
+					if link.ID == id && link.Type == "page" {
+						validCustomPage = true
+						break
+					}
+				}
+			}
+			if !contains(startMenuPages, button.Target) && !validCustomPage {
+				return fmt.Errorf("invalid page for start button %q", button.ID)
+			}
+		case "url":
+			if !isSafeWebURL(button.Target) || len(button.Target) > 2048 {
+				return fmt.Errorf("invalid URL for start button %q", button.ID)
+			}
+		case "trial", "plans", "notifications":
+			button.Target = ""
+		case "submenu":
+			button.Target = ""
+			if len(button.ID) > 55 || button.Submenu == nil {
+				return fmt.Errorf("invalid submenu for start button %q", button.ID)
+			}
+			menu := button.Submenu
+			menu.Text = limit(strings.TrimSpace(menu.Text), 3500)
+			if menu.Text == "" {
+				return fmt.Errorf("submenu %q needs text", button.ID)
+			}
+			if err := normalizeOptionalAsset(&menu.Banner, "start submenu banner"); err != nil {
+				return err
+			}
+			if len(menu.Buttons) > 20 {
+				return fmt.Errorf("too many submenu buttons for %q", button.ID)
+			}
+			seen := map[string]bool{}
+			rowCounts := map[int]int{}
+			for childIndex := range menu.Buttons {
+				child := &menu.Buttons[childIndex]
+				child.ID = strings.ToLower(strings.TrimSpace(child.ID))
+				child.Kind = strings.ToLower(strings.TrimSpace(child.Kind))
+				child.Target = strings.TrimSpace(child.Target)
+				child.Text = strings.TrimSpace(child.Text)
+				child.Submenu = nil
+				if !elementIDPattern.MatchString(child.ID) || seen[child.ID] || child.Row < 0 || child.Row > 29 || utf8.RuneCountInString(child.Text) < 1 || utf8.RuneCountInString(child.Text) > 64 {
+					return fmt.Errorf("invalid submenu button %q", child.ID)
+				}
+				seen[child.ID] = true
+				rowCounts[child.Row]++
+				if rowCounts[child.Row] > 8 {
+					return fmt.Errorf("too many buttons in submenu row %d", child.Row+1)
+				}
+				child.IconCustomEmojiID, err = NormalizeTelegramCustomEmojiID(child.IconCustomEmojiID)
+				if err != nil {
+					return err
+				}
+				child.Style, err = NormalizeTelegramButtonStyle(child.Style)
+				if err != nil {
+					return err
+				}
+				switch child.Kind {
+				case "page":
+					validCustomPage := false
+					if strings.HasPrefix(child.Target, "custom-page:") {
+						id := strings.TrimPrefix(child.Target, "custom-page:")
+						for _, link := range value.CustomLinks {
+							if link.ID == id && link.Type == "page" {
+								validCustomPage = true
+								break
+							}
+						}
+					}
+					if !contains(startMenuPages, child.Target) && !validCustomPage {
+						return fmt.Errorf("invalid page for submenu button %q", child.ID)
+					}
+				case "url":
+					if !isSafeWebURL(child.Target) || len(child.Target) > 2048 {
+						return fmt.Errorf("invalid URL for submenu button %q", child.ID)
+					}
+				case "trial", "plans", "notifications":
+					child.Target = ""
+				default:
+					return fmt.Errorf("invalid kind for submenu button %q", child.ID)
+				}
+			}
+		default:
+			return fmt.Errorf("invalid kind for start button %q", button.ID)
+		}
+	}
+
+	value.Commerce.TariffsText = normalizedRequiredText(value.Commerce.TariffsText, defaults.Commerce.TariffsText, 3500)
+	value.Commerce.PaymentMethodsText = normalizedRequiredText(value.Commerce.PaymentMethodsText, defaults.Commerce.PaymentMethodsText, 3500)
+	value.Commerce.PaymentReadyText = normalizedRequiredText(value.Commerce.PaymentReadyText, defaults.Commerce.PaymentReadyText, 3500)
+	value.Commerce.SuccessText = normalizedRequiredText(value.Commerce.SuccessText, defaults.Commerce.SuccessText, 3500)
+	if legacy && strings.TrimSpace(value.Commerce.Banner) == "" {
+		value.Commerce.Banner = defaults.Commerce.Banner
+	}
+	if err := normalizeOptionalAsset(&value.Commerce.Banner, "tariff flow banner"); err != nil {
+		return err
+	}
+	if err := normalizeOptionalAsset(&value.Commerce.SuccessBanner, "subscription success banner"); err != nil {
+		return err
+	}
+	buttons := []struct {
+		name     string
+		value    *TelegramButtonSettings
+		fallback TelegramButtonSettings
+	}{
+		{"YooKassa button", &value.Commerce.YookassaButton, defaults.Commerce.YookassaButton},
+		{"CryptoPay button", &value.Commerce.CryptoButton, defaults.Commerce.CryptoButton},
+		{"Telegram Stars button", &value.Commerce.StarsButton, defaults.Commerce.StarsButton},
+		{"payment button", &value.Commerce.PayButton, defaults.Commerce.PayButton},
+		{"back button", &value.Commerce.BackButton, defaults.Commerce.BackButton},
+		{"success button", &value.Commerce.SuccessButton, defaults.Commerce.SuccessButton},
+	}
+	for _, item := range buttons {
+		if err := normalizeTelegramButton(item.value, item.fallback); err != nil {
+			return fmt.Errorf("%s: %w", item.name, err)
+		}
+	}
+	return nil
+}
+
+func NormalizeGiftMessageSettings(value *TelegramGiftMessageSettings, fallback TelegramGiftMessageSettings) error {
+	if value == nil {
+		return errors.New("gift message is required")
+	}
+	value.Text = normalizedRequiredText(value.Text, fallback.Text, 3500)
+	if value.Buttons == nil {
+		value.Buttons = append([]database.BroadcastButton(nil), fallback.Buttons...)
+	}
+	mapped := append([]database.BroadcastButton(nil), value.Buttons...)
+	dynamic := make(map[int]bool)
+	for index := range mapped {
+		if strings.EqualFold(strings.TrimSpace(mapped[index].Type), "gift") {
+			dynamic[index] = true
+			mapped[index].Type = "url"
+			mapped[index].URL = "https://t.me/example_bot?start=gift_example"
+		}
+	}
+	clean, err := broadcast.ValidateButtons(mapped)
+	if err != nil {
+		return err
+	}
+	for index := range clean {
+		if dynamic[index] {
+			clean[index].Type = "gift"
+			clean[index].URL = ""
+		}
+	}
+	value.Buttons = clean
+	return nil
+}
+
+func normalizeTelegramButton(value *TelegramButtonSettings, fallback TelegramButtonSettings) error {
+	value.Text = normalizedRequiredText(value.Text, fallback.Text, 64)
+	emojiID, err := NormalizeTelegramCustomEmojiID(value.IconCustomEmojiID)
+	if err != nil {
+		return err
+	}
+	style, err := NormalizeTelegramButtonStyle(value.Style)
+	if err != nil {
+		return err
+	}
+	value.IconCustomEmojiID = emojiID
+	value.Style = style
+	return nil
+}
+
+func normalizeOptionalAsset(value *string, name string) error {
+	*value = strings.TrimSpace(*value)
+	if *value != "" && !isSafeAssetURL(*value) {
+		return fmt.Errorf("%s must be an HTTP(S) URL or local /assets path", name)
+	}
+	return nil
+}
+
+func normalizedRequiredText(value, fallback string, max int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = strings.TrimSpace(fallback)
+	}
+	return limit(value, max)
+}
+
+// ValidateThemeAppearance applies the same rules used when saving live settings.
+func ValidateThemeAppearance(value AppearanceSettings) (AppearanceSettings, error) {
+	if value.Colors == nil || value.BackgroundMode == "" {
+		return AppearanceSettings{}, errors.New("theme file has no appearance settings")
+	}
+	if err := validateAppearance(&value, DefaultSettings().Appearance, false); err != nil {
+		return AppearanceSettings{}, err
+	}
+	return value, nil
+}
+
+func validateAppearance(value *AppearanceSettings, defaults AppearanceSettings, migrating bool) error {
+	value.Seasonal.Mode = strings.ToLower(strings.TrimSpace(value.Seasonal.Mode))
+	if value.Seasonal.Mode == "" {
+		value.Seasonal = defaults.Seasonal
+	}
+	switch value.Seasonal.Mode {
+	case "off", "winter", "halloween":
+	default:
+		return errors.New("seasonal decoration mode must be off, winter or halloween")
+	}
+	if value.Seasonal.Intensity == 0 {
+		value.Seasonal.Intensity = defaults.Seasonal.Intensity
+	}
+	if value.Seasonal.Intensity < 10 || value.Seasonal.Intensity > 100 {
+		return errors.New("seasonal decoration intensity must be between 10 and 100")
+	}
+	// Themes saved before the visual redesign used the skull switch for the
+	// Halloween ornament. Carry its choice over to the new web detail once.
+	if value.Seasonal.HalloweenSkulls {
+		value.Seasonal.HalloweenWebs = true
+		value.Seasonal.HalloweenSpider = true
+		value.Seasonal.HalloweenSkulls = false
+	}
+	value.Seasonal.HalloweenFog = false
+	value.Seasonal.WinterGarland = false
+	value.BottomNavStyle = strings.ToLower(strings.TrimSpace(value.BottomNavStyle))
+	if value.BottomNavStyle == "" {
+		value.BottomNavStyle = defaults.BottomNavStyle
+	}
+	switch value.BottomNavStyle {
+	case "classic", "contour", "notch", "capsule":
+	default:
+		if !migrating {
+			return errors.New("bottom navigation style must be classic, contour, notch or capsule")
+		}
+		value.BottomNavStyle = defaults.BottomNavStyle
+	}
+	value.Compact = true
+	value.BackgroundMode = strings.ToLower(strings.TrimSpace(value.BackgroundMode))
+	if value.BackgroundMode == "" {
+		value.BackgroundMode = defaults.BackgroundMode
+	}
+	// Older installations may still store a background that is no longer offered.
+	if value.BackgroundMode == "liquid1" || value.BackgroundMode == "liquid2" {
+		value.BackgroundMode = defaults.BackgroundMode
+	}
+	if value.BackgroundMode != "custom" && value.BackgroundMode != "animated" && value.BackgroundMode != "grid" && value.BackgroundMode != "grid2" && value.BackgroundMode != "blocks" && value.BackgroundMode != "morphic" && value.BackgroundMode != "twinkle" && value.BackgroundMode != "backtyan" && value.BackgroundMode != "solid" {
+		return errors.New("background mode must be animated, grid, grid2, blocks, morphic, twinkle, backtyan, custom or solid")
+	}
+	if err := validateCustomBackgrounds(value); err != nil {
+		return err
+	}
+	if value.Colors == nil {
+		value.Colors = map[string]string{}
+	}
+	for name, fallback := range defaults.Colors {
+		color := strings.ToLower(strings.TrimSpace(value.Colors[name]))
+		if color == "" {
+			color = fallback
+		}
+		if !hexColorPattern.MatchString(color) {
+			return fmt.Errorf("invalid color %q", name)
+		}
+		value.Colors[name] = color
+	}
+	for name := range value.Colors {
+		if _, ok := defaults.Colors[name]; !ok {
+			delete(value.Colors, name)
+		}
+	}
+	if value.Liquid == nil {
+		value.Liquid = map[string]LiquidBackgroundSettings{}
+	}
+	legacyLiquidPalette := map[string]bool{}
+	for name, fallback := range defaults.Liquid {
+		current, exists := value.Liquid[name]
+		if !exists {
+			current = fallback
+		}
+		if len(current.Colors) != len(fallback.Colors) {
+			current.Colors = append([]string(nil), fallback.Colors...)
+		}
+		for index, fallbackColor := range fallback.Colors {
+			color := strings.ToLower(strings.TrimSpace(current.Colors[index]))
+			if color == "" {
+				color = fallbackColor
+			}
+			if !hexColorPattern.MatchString(color) {
+				return fmt.Errorf("invalid liquid background color %q", name)
+			}
+			current.Colors[index] = color
+		}
+		legacyColors := []string{"#000000", "#1646ff", "#7226ff", "#ffffff"}
+		legacyLiquidPalette[name] = true
+		for index, oldColor := range legacyColors {
+			if current.Colors[index] != oldColor {
+				legacyLiquidPalette[name] = false
+				break
+			}
+		}
+		if legacyLiquidPalette[name] {
+			current.Colors = append([]string(nil), fallback.Colors...)
+			oldDimming := 26
+			if name == "liquid2" {
+				oldDimming = 38
+			}
+			if current.Dimming == oldDimming {
+				current.Dimming = fallback.Dimming
+			}
+		}
+		if current.Dimming < 0 || current.Dimming > 80 {
+			return fmt.Errorf("liquid background dimming %q must be between 0 and 80", name)
+		}
+		if current.Speed < 10 || current.Speed > 100 {
+			current.Speed = fallback.Speed
+		}
+		value.Liquid[name] = current
+	}
+	for name := range value.Liquid {
+		if _, ok := defaults.Liquid[name]; !ok {
+			delete(value.Liquid, name)
+		}
+	}
+	if value.BackgroundMotion == nil {
+		value.BackgroundMotion = map[string]BackgroundMotionSettings{}
+	}
+	for name, fallback := range defaults.BackgroundMotion {
+		current, exists := value.BackgroundMotion[name]
+		if !exists {
+			current = fallback
+		}
+		if migrating && (name == "liquid1" || name == "liquid2") {
+			if legacy, ok := value.Liquid[name]; ok {
+				current.Dimming = legacy.Dimming
+				current.Speed = legacy.Speed
+			}
+		}
+		if legacyLiquidPalette[name] {
+			oldDimming := 26
+			if name == "liquid2" {
+				oldDimming = 38
+			}
+			if current.Dimming == oldDimming {
+				current.Dimming = fallback.Dimming
+			}
+		}
+		if current.Dimming < 0 || current.Dimming > 80 {
+			return fmt.Errorf("background dimming %q must be between 0 and 80", name)
+		}
+		if current.Speed < 10 || current.Speed > 100 {
+			current.Speed = fallback.Speed
+		}
+		value.BackgroundMotion[name] = current
+	}
+	for name := range value.BackgroundMotion {
+		if _, ok := defaults.BackgroundMotion[name]; !ok {
+			delete(value.BackgroundMotion, name)
+		}
+	}
+	return validateSurfaces(value)
+}
+
+func validateLayout(value *LayoutSettings, defaults LayoutSettings, migrate bool) error {
+	// Dashboard sections are structural wrappers. Keeping their legacy geometry
+	// would make a wrapper and its children move at the same time in the editor.
+	filtered := value.Elements[:0]
+	for _, item := range value.Elements {
+		if item.Area == "dashboard" && (contains([]string{"brand", "subscription", "actions"}, item.ID) || strings.HasPrefix(item.ID, "home_button_")) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	value.Elements = filtered
+	if value.PlanColumns < 1 || value.PlanColumns > 2 {
+		value.PlanColumns = defaults.PlanColumns
+	}
+	if value.LogoWidth < 48 || value.LogoWidth > 220 {
+		value.LogoWidth = defaults.LogoWidth
+	}
+	if len(value.Elements) == 0 {
+		value.Elements = defaults.Elements
+	}
+	defaultByKey := make(map[string]LayoutElement, len(defaults.Elements))
+	present := make(map[string]bool, len(value.Elements))
+	for _, item := range defaults.Elements {
+		defaultByKey[item.Area+":"+item.ID] = item
+	}
+	for _, item := range value.Elements {
+		present[strings.ToLower(strings.TrimSpace(item.Area))+":"+strings.ToLower(strings.TrimSpace(item.ID))] = true
+	}
+	for _, item := range defaults.Elements {
+		if !present[item.Area+":"+item.ID] {
+			value.Elements = append(value.Elements, item)
+		}
+	}
+	if len(value.Elements) > 100 {
+		return errors.New("too many layout elements")
+	}
+
+	seen := map[string]bool{}
+	for index := range value.Elements {
+		item := &value.Elements[index]
+		item.ID = strings.ToLower(strings.TrimSpace(item.ID))
+		item.Area = strings.ToLower(strings.TrimSpace(item.Area))
+		key := item.Area + ":" + item.ID
+		if !elementIDPattern.MatchString(item.ID) || !contains([]string{"dashboard", "buy", "support", "profile", "navigation"}, item.Area) || seen[key] {
+			return fmt.Errorf("invalid or duplicate layout element %q", key)
+		}
+		seen[key] = true
+		fallback, hasFallback := defaultByKey[key]
+		if !hasFallback {
+			fallback = LayoutElement{Width: 100, Height: 52, Align: "left"}
+			if item.Area == "navigation" {
+				fallback.Width, fallback.Height, fallback.Align = 44, 38, "center"
+			}
+		}
+		if item.Order < 0 {
+			item.Order = 0
+		}
+		item.Align = strings.ToLower(strings.TrimSpace(item.Align))
+		item.Group = strings.ToLower(strings.TrimSpace(item.Group))
+		item.PromoCode = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(item.PromoCode), " ", ""))
+		item.NotificationText = strings.TrimSpace(item.NotificationText)
+		isPromoWidget := item.Area == "dashboard" && item.ID == "promo_widget"
+		isNotificationWidget := item.Area == "dashboard" && item.ID == "notification_widget"
+		isBanner := item.Area == "dashboard" && bannerIDPattern.MatchString(item.ID)
+		isDashboardElement := item.Area == "dashboard"
+		if isDashboardElement {
+			if migrate {
+				item.CornerRadius = defaultDashboardCornerRadius(item.ID)
+				item.TextScale = 100
+			}
+			if item.CornerRadius < 0 {
+				item.CornerRadius = 0
+			} else if item.CornerRadius > 64 {
+				item.CornerRadius = 64
+			}
+			if item.TextScale < 50 || item.TextScale > 200 {
+				item.TextScale = 100
+			}
+			item.TextOffsetX = max(-120, min(120, item.TextOffsetX))
+			item.TextOffsetY = max(-120, min(120, item.TextOffsetY))
+			item.Layer = max(-100, min(100, item.Layer))
+		} else {
+			item.CornerRadius = 0
+			item.TextScale = 0
+			item.TextOffsetX = 0
+			item.TextOffsetY = 0
+			item.Layer = 0
+		}
+		if isPromoWidget || isNotificationWidget {
+			if item.IconBubble == nil {
+				item.IconBubble = boolPointer(true)
+			}
+		} else {
+			item.IconBubble = nil
+		}
+		if isPromoWidget {
+			if item.PromoCode != "" && !promoCodePattern.MatchString(item.PromoCode) {
+				return fmt.Errorf("invalid promo code for %q", key)
+			}
+		} else {
+			item.PromoCode = ""
+		}
+		if isNotificationWidget {
+			if utf8.RuneCountInString(item.NotificationText) > 2000 {
+				return fmt.Errorf("notification text is too long for %q", key)
+			}
+		} else {
+			item.NotificationText = ""
+		}
+		if isBanner {
+			item.BannerURL = strings.TrimSpace(item.BannerURL)
+			matches := bannerUploadPattern.FindStringSubmatch(item.BannerURL)
+			if len(matches) != 2 {
+				return fmt.Errorf("invalid banner media for %q", key)
+			}
+			item.BannerMediaType = strings.ToLower(strings.TrimSpace(item.BannerMediaType))
+			if item.BannerMediaType == "" {
+				item.BannerMediaType = matches[1]
+			}
+			if item.BannerMediaType != matches[1] || !contains([]string{"png", "gif", "mp4"}, item.BannerMediaType) {
+				return fmt.Errorf("invalid banner media type for %q", key)
+			}
+			item.BannerCropX = max(0, min(100, item.BannerCropX))
+			item.BannerCropY = max(0, min(100, item.BannerCropY))
+			if item.BannerZoom < 100 || item.BannerZoom > 250 {
+				item.BannerZoom = 100
+			}
+			if item.BannerMediaWidth < 0 || item.BannerMediaWidth > 16384 || item.BannerMediaHeight < 0 || item.BannerMediaHeight > 16384 {
+				return fmt.Errorf("invalid banner dimensions for %q", key)
+			}
+			if (item.BannerMediaWidth == 0) != (item.BannerMediaHeight == 0) {
+				return fmt.Errorf("incomplete banner dimensions for %q", key)
+			}
+			for _, value := range []float64{item.BannerCropLeft, item.BannerCropTop, item.BannerCropWidth, item.BannerCropHeight} {
+				if math.IsNaN(value) || math.IsInf(value, 0) {
+					return fmt.Errorf("invalid banner crop for %q", key)
+				}
+			}
+			hasManualCrop := item.BannerCropWidth != 0 || item.BannerCropHeight != 0
+			if hasManualCrop {
+				if item.BannerCropWidth <= 0 || item.BannerCropHeight <= 0 || item.BannerMediaWidth == 0 {
+					return fmt.Errorf("incomplete banner crop for %q", key)
+				}
+				item.BannerCropWidth = math.Max(1, math.Min(100, item.BannerCropWidth))
+				item.BannerCropHeight = math.Max(1, math.Min(100, item.BannerCropHeight))
+				item.BannerCropLeft = math.Max(0, math.Min(100-item.BannerCropWidth, item.BannerCropLeft))
+				item.BannerCropTop = math.Max(0, math.Min(100-item.BannerCropHeight, item.BannerCropTop))
+			} else {
+				item.BannerCropLeft = 0
+				item.BannerCropTop = 0
+				item.BannerCropWidth = 0
+				item.BannerCropHeight = 0
+			}
+			item.BannerAction = strings.ToLower(strings.TrimSpace(item.BannerAction))
+			if !contains([]string{"none", "url", "page"}, item.BannerAction) {
+				return fmt.Errorf("invalid banner action for %q", key)
+			}
+			item.BannerTarget = strings.TrimSpace(item.BannerTarget)
+			switch item.BannerAction {
+			case "none":
+				item.BannerTarget = ""
+			case "page":
+				if !contains([]string{"reviews", "promo", "buy", "servers", "support", "referrals", "payments", "gift"}, item.BannerTarget) {
+					return fmt.Errorf("invalid banner page target for %q", key)
+				}
+			case "url":
+				parsed, err := url.ParseRequestURI(item.BannerTarget)
+				if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+					return fmt.Errorf("invalid banner link for %q", key)
+				}
+			}
+			item.BannerAlt = limit(strings.TrimSpace(item.BannerAlt), 160)
+		} else {
+			item.BannerURL = ""
+			item.BannerMediaType = ""
+			item.BannerCropX = 0
+			item.BannerCropY = 0
+			item.BannerZoom = 0
+			item.BannerMediaWidth = 0
+			item.BannerMediaHeight = 0
+			item.BannerCropLeft = 0
+			item.BannerCropTop = 0
+			item.BannerCropWidth = 0
+			item.BannerCropHeight = 0
+			item.BannerAction = ""
+			item.BannerTarget = ""
+			item.BannerAlt = ""
+		}
+		if item.Area == "profile" && !strings.HasPrefix(item.ID, "group_") {
+			if item.Group == "" {
+				item.Group = fallback.Group
+			}
+			if !contains([]string{"main", "purchases", "programs", "help", "account"}, item.Group) {
+				return fmt.Errorf("invalid profile group for %q", key)
+			}
+		} else {
+			item.Group = ""
+		}
+		if item.Align == "" && hasFallback {
+			item.Align = fallback.Align
+		}
+		if !contains([]string{"left", "center", "right"}, item.Align) {
+			return fmt.Errorf("invalid layout alignment for %q", key)
+		}
+		if item.OffsetX < -1000 {
+			item.OffsetX = -1000
+		} else if item.OffsetX > 1000 {
+			item.OffsetX = 1000
+		}
+		if item.OffsetY < -1000 {
+			item.OffsetY = -1000
+		} else if item.OffsetY > 1000 {
+			item.OffsetY = 1000
+		}
+		if item.PositionX != nil {
+			if math.IsNaN(*item.PositionX) || math.IsInf(*item.PositionX, 0) {
+				item.PositionX = nil
+			} else {
+				value := math.Max(-2000, math.Min(2000, *item.PositionX))
+				item.PositionX = &value
+			}
+		}
+		if item.PositionY != nil {
+			if math.IsNaN(*item.PositionY) || math.IsInf(*item.PositionY, 0) {
+				item.PositionY = nil
+			} else {
+				value := math.Max(-2000, math.Min(4000, *item.PositionY))
+				item.PositionY = &value
+			}
+		}
+		if item.Area == "navigation" {
+			if item.Width < 28 || item.Width > 100 {
+				item.Width = fallback.Width
+			}
+			if item.Height < 24 || item.Height > 96 {
+				item.Height = fallback.Height
+			}
+		} else if item.Area == "dashboard" && item.ID == "subscription_switcher" {
+			if item.Width < 24 || item.Width > 100 {
+				item.Width = fallback.Width
+			}
+			if item.Height < 32 || item.Height > 72 {
+				item.Height = fallback.Height
+			}
+		} else if item.Area == "dashboard" && (contains([]string{"promo_widget", "notification_widget"}, item.ID) || isBanner) {
+			if item.Width < 6 || item.Width > 150 {
+				item.Width = fallback.Width
+			}
+			if item.Height < 36 || item.Height > 720 {
+				item.Height = fallback.Height
+			}
+		} else if item.Area == "profile" {
+			if item.Width < 10 || item.Width > 150 {
+				item.Width = fallback.Width
+			}
+			if item.Height < 20 || item.Height > 180 {
+				item.Height = fallback.Height
+			}
+		} else {
+			if item.Width < 10 || item.Width > 150 {
+				item.Width = fallback.Width
+			}
+			if item.Height < 20 || item.Height > 720 {
+				item.Height = fallback.Height
+			}
+		}
+	}
+	sort.SliceStable(value.Elements, func(i, j int) bool {
+		if value.Elements[i].Area == value.Elements[j].Area {
+			return value.Elements[i].Order < value.Elements[j].Order
+		}
+		return value.Elements[i].Area < value.Elements[j].Area
+	})
+	return nil
+}
+
+func validateSubPage(value *SubPageSettings, defaults SubPageSettings, migrate bool) error {
+	if migrate {
+		value.IncludeBuiltIns = defaults.IncludeBuiltIns
+	}
+	if value.Clients == nil {
+		value.Clients = []SubPageClientSettings{}
+	}
+	priorities := make([]string, 0, 2)
+	prioritySeen := map[string]bool{}
+	for _, id := range value.PriorityBuiltIns {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if (id == "happ" || id == "incy") && !prioritySeen[id] {
+			prioritySeen[id] = true
+			priorities = append(priorities, id)
+		}
+	}
+	value.PriorityBuiltIns = priorities
+	if len(value.Clients) > 24 {
+		return errors.New("too many Sub page clients")
+	}
+
+	seen := make(map[string]bool, len(value.Clients))
+	enabledFound := value.IncludeBuiltIns
+	for index := range value.Clients {
+		client := &value.Clients[index]
+		client.ID = strings.ToLower(strings.TrimSpace(client.ID))
+		client.Name = limit(strings.TrimSpace(client.Name), 60)
+		client.Scheme = strings.TrimSpace(client.Scheme)
+		client.InstallURL = strings.TrimSpace(client.InstallURL)
+		client.InstallLabelRU = limit(strings.TrimSpace(client.InstallLabelRU), 60)
+		if !elementIDPattern.MatchString(client.ID) || client.ID == "happ" || client.ID == "incy" || seen[client.ID] {
+			return fmt.Errorf("invalid or duplicate Sub page client %q", client.ID)
+		}
+		seen[client.ID] = true
+		if client.Name == "" {
+			return fmt.Errorf("Sub page client %q requires a name", client.ID)
+		}
+		if len(client.Scheme) > 256 || !strings.Contains(client.Scheme, "://") || strings.ContainsAny(client.Scheme, " \t\r\n") {
+			return fmt.Errorf("invalid scheme for Sub page client %q", client.ID)
+		}
+		parsedScheme, err := url.Parse(client.Scheme + "https://example.com/subscription")
+		if err != nil || parsedScheme.Scheme == "" || contains([]string{"http", "https", "javascript", "data", "file", "blob"}, strings.ToLower(parsedScheme.Scheme)) {
+			return fmt.Errorf("invalid scheme for Sub page client %q", client.ID)
+		}
+		if client.InstallURL != "" && !isSafeWebURL(client.InstallURL) {
+			return fmt.Errorf("invalid install URL for Sub page client %q", client.ID)
+		}
+		if client.InstallLabelRU == "" {
+			client.InstallLabelRU = "Скачать " + client.Name
+		}
+		if client.AllPlatforms {
+			client.Platforms = []string{}
+		} else {
+			normalized := make([]string, 0, len(client.Platforms))
+			platformSeen := map[string]bool{}
+			for _, platform := range client.Platforms {
+				platform = strings.ToLower(strings.TrimSpace(platform))
+				if !contains(setupPlatformOrder, platform) || platformSeen[platform] {
+					continue
+				}
+				platformSeen[platform] = true
+				normalized = append(normalized, platform)
+			}
+			client.Platforms = normalized
+			if client.Enabled && len(client.Platforms) == 0 {
+				return fmt.Errorf("Sub page client %q requires at least one device", client.ID)
+			}
+		}
+		if !client.Enabled {
+			client.Featured = false
+			continue
+		}
+		enabledFound = true
+	}
+	if !enabledFound {
+		return errors.New("Sub page requires at least one enabled client")
+	}
+	return nil
+}
+
+func validatePlans(value *[]PlanSettings, defaults []PlanSettings) error {
+	if *value == nil {
+		*value = append([]PlanSettings(nil), defaults...)
+	}
+	defaultByID := map[string]PlanSettings{}
+	for _, item := range defaults {
+		defaultByID[item.ID] = item
+	}
+	provided := map[string]PlanSettings{}
+	result := make([]PlanSettings, 0, len(*value))
+	for _, item := range *value {
+		item.ID = strings.ToLower(strings.TrimSpace(item.ID))
+		if !elementIDPattern.MatchString(item.ID) {
+			return fmt.Errorf("invalid plan %q", item.ID)
+		}
+		if _, exists := provided[item.ID]; exists {
+			return fmt.Errorf("duplicate plan %q", item.ID)
+		}
+		fallback := defaultByID[item.ID]
+		if item.Months == 0 && item.Days == 0 {
+			item.Months = fallback.Months
+			if item.Months == 0 {
+				item.Months = inferPlanMonths(item.ID)
+			}
+		}
+		if item.Months < 0 || item.Months > 120 || item.Days < 0 || item.Days > 3650 || (item.Months > 0 && item.Days > 0) || (item.Enabled && item.Months == 0 && item.Days == 0) {
+			return fmt.Errorf("invalid duration for plan %q", item.ID)
+		}
+		if item.PriceRub < 0 || item.PriceRub > 1000000 {
+			return fmt.Errorf("invalid price for plan %q", item.ID)
+		}
+		if item.OriginalPriceRub < 0 || item.OriginalPriceRub > 1000000 || (item.OriginalPriceRub > 0 && (item.PriceRub <= 0 || item.OriginalPriceRub <= item.PriceRub)) {
+			return fmt.Errorf("invalid original price for plan %q", item.ID)
+		}
+		item.DiscountEndsAt = strings.TrimSpace(item.DiscountEndsAt)
+		if item.OriginalPriceRub == 0 {
+			item.DiscountEndsAt = ""
+		} else if item.DiscountEndsAt != "" {
+			if _, err := time.Parse(time.RFC3339, item.DiscountEndsAt); err != nil {
+				return fmt.Errorf("invalid discount end time for plan %q", item.ID)
+			}
+		}
+		item.PriceStars = planbook.StarsForRub(item.PriceRub)
+		if item.PriceRub > 0 {
+			item.FreeOneTime = false
+		}
+		if item.TrafficGB < 0 || item.TrafficGB > 1000000 || item.DeviceLimit < 0 || item.DeviceLimit > 1000 {
+			return fmt.Errorf("invalid limits for plan %q", item.ID)
+		}
+		if err := validateDeviceTraffic(&item); err != nil {
+			return fmt.Errorf("plan %q: %w", item.ID, err)
+		}
+		item.Name = limit(strings.TrimSpace(item.Name), 80)
+		item.NameEN = limit(strings.TrimSpace(item.NameEN), 80)
+		item.TitleRU = limit(strings.TrimSpace(item.TitleRU), 80)
+		item.TitleEN = limit(strings.TrimSpace(item.TitleEN), 80)
+		item.TitleFA = limit(strings.TrimSpace(item.TitleFA), 80)
+		if item.TitleRU == "" {
+			if item.Days > 0 {
+				item.TitleRU = planTitleDaysRU(item.Days)
+			} else {
+				item.TitleRU = fallback.TitleRU
+				if item.TitleRU == "" && item.Months > 0 {
+					item.TitleRU = planTitleRU(item.Months)
+				}
+			}
+		}
+		if item.TitleEN == "" {
+			if item.Days > 0 {
+				item.TitleEN = planTitleDaysEN(item.Days)
+			} else {
+				item.TitleEN = fallback.TitleEN
+				if item.TitleEN == "" && item.Months > 0 {
+					item.TitleEN = planTitleEN(item.Months)
+				}
+			}
+		}
+		if item.TitleFA == "" {
+			if item.Days > 0 {
+				item.TitleFA = planTitleDaysFA(item.Days)
+			} else {
+				item.TitleFA = fallback.TitleFA
+				if item.TitleFA == "" && item.Months > 0 {
+					item.TitleFA = planTitleFA(item.Months)
+				}
+			}
+		}
+		var err error
+		item.InternalSquadUUIDs, err = normalizeUUIDStrings(item.InternalSquadUUIDs)
+		if err != nil {
+			return fmt.Errorf("invalid internal squad for plan %q: %w", item.ID, err)
+		}
+		item.ExternalSquadUUID, err = normalizeOptionalUUID(item.ExternalSquadUUID)
+		if err != nil {
+			return fmt.Errorf("invalid external squad for plan %q: %w", item.ID, err)
+		}
+		provided[item.ID] = item
+		result = append(result, item)
+	}
+	if len(result) > 100 {
+		return errors.New("too many plans")
+	}
+	*value = result
+	return nil
+}
+
+func validateDevicePacks(value *[]DevicePackSettings) error {
+	if *value == nil {
+		*value = []DevicePackSettings{}
+	}
+	seen := map[string]struct{}{}
+	result := make([]DevicePackSettings, 0, len(*value))
+	for _, item := range *value {
+		item.ID = strings.ToLower(strings.TrimSpace(item.ID))
+		if !elementIDPattern.MatchString(item.ID) {
+			return fmt.Errorf("invalid device pack %q", item.ID)
+		}
+		if _, exists := seen[item.ID]; exists {
+			return fmt.Errorf("duplicate device pack %q", item.ID)
+		}
+		if item.Devices < 1 || item.Devices > 1000 {
+			return fmt.Errorf("invalid device count for pack %q", item.ID)
+		}
+		if item.PriceRub < 1 || item.PriceRub > 1000000 {
+			return fmt.Errorf("invalid price for device pack %q", item.ID)
+		}
+		item.PriceStars = planbook.StarsForRub(item.PriceRub)
+		seen[item.ID] = struct{}{}
+		result = append(result, item)
+	}
+	if len(result) > 100 {
+		return errors.New("too many device packs")
+	}
+	*value = result
+	return nil
+}
+
+func validateTrafficPacks(value *[]TrafficPackSettings) error {
+	if *value == nil {
+		*value = []TrafficPackSettings{}
+	}
+	seen := map[string]struct{}{}
+	for i := range *value {
+		item := &(*value)[i]
+		item.ID = strings.ToLower(strings.TrimSpace(item.ID))
+		if !elementIDPattern.MatchString(item.ID) {
+			return fmt.Errorf("invalid traffic pack %q", item.ID)
+		}
+		if _, exists := seen[item.ID]; exists {
+			return fmt.Errorf("duplicate traffic pack %q", item.ID)
+		}
+		if item.TrafficGB < 0 || item.TrafficGB > 1000000 {
+			return fmt.Errorf("invalid traffic amount for pack %q", item.ID)
+		}
+		if item.PriceRub < 1 || item.PriceRub > 1000000 {
+			return fmt.Errorf("invalid price for traffic pack %q", item.ID)
+		}
+		item.PriceStars = planbook.StarsForRub(item.PriceRub)
+		seen[item.ID] = struct{}{}
+	}
+	if len(*value) > 100 {
+		return errors.New("too many traffic packs")
+	}
+	return nil
+}
+
+func validateTrial(value *TrialSettings, _ TrialSettings, _ bool) error {
+	if value.Days < 0 || value.Days > 365 {
+		return errors.New("invalid trial duration")
+	}
+	if value.TrafficGB < 0 || value.TrafficGB > 1000000 || value.DeviceLimit < 0 || value.DeviceLimit > 1000 {
+		return errors.New("invalid trial limits")
+	}
+	if value.Days == 0 {
+		value.Enabled = false
+	}
+	if value.UnlimitedTraffic {
+		value.TrafficGB = 0
+	}
+	strategy := strings.ToUpper(strings.TrimSpace(value.TrafficResetStrategy))
+	switch strategy {
+	case "NO_RESET", "DAY", "WEEK", "MONTH":
+		value.TrafficResetStrategy = strategy
+	default:
+		value.TrafficResetStrategy = "MONTH"
+	}
+	value.Tag = limit(strings.TrimSpace(value.Tag), 64)
+	var err error
+	value.InternalSquadUUIDs, err = normalizeUUIDStrings(value.InternalSquadUUIDs)
+	if err != nil {
+		return fmt.Errorf("invalid trial internal squad: %w", err)
+	}
+	value.ExternalSquadUUID, err = normalizeOptionalUUID(value.ExternalSquadUUID)
+	if err != nil {
+		return fmt.Errorf("invalid trial external squad: %w", err)
+	}
+	return nil
+}
+
+func validateReferrals(value *ReferralSettings) error {
+	if value == nil {
+		return errors.New("referral settings are required")
+	}
+	if err := validateReferralReward(&value.Trial, false); err != nil {
+		return fmt.Errorf("invalid trial referral reward: %w", err)
+	}
+	if err := validateReferralReward(&value.Purchase, true); err != nil {
+		return fmt.Errorf("invalid purchase referral reward: %w", err)
+	}
+	if value.MinimumWithdrawalRub < 0 || value.MinimumWithdrawalRub > 1000000 {
+		return errors.New("invalid minimum referral withdrawal")
+	}
+	return nil
+}
+
+func validateReferralReward(value *ReferralRewardSettings, allowPercent bool) error {
+	if value.Days < 0 || value.Days > 3650 {
+		return errors.New("invalid reward duration")
+	}
+	if value.TrafficGB < 0 || value.TrafficGB > 1000000 {
+		return errors.New("invalid reward traffic")
+	}
+	if value.BalanceRub < 0 || value.BalanceRub > 1000000 {
+		return errors.New("invalid fixed balance reward")
+	}
+	if value.BalancePercent < 0 || value.BalancePercent > 100 {
+		return errors.New("invalid percentage balance reward")
+	}
+	value.BalanceMode = strings.ToLower(strings.TrimSpace(value.BalanceMode))
+	switch value.BalanceMode {
+	case "none":
+		value.BalanceRub = 0
+		value.BalancePercent = 0
+	case "fixed":
+		value.BalancePercent = 0
+	case "percent":
+		if !allowPercent {
+			return errors.New("percentage is only available for purchase rewards")
+		}
+		value.BalanceRub = 0
+	default:
+		return errors.New("balance mode must be one of: none, fixed, percent")
+	}
+	return nil
+}
+
+func validateGrace(value *GraceSettings) error {
+	if value.Days < 0 || value.Days > 365 {
+		return errors.New("invalid grace access duration")
+	}
+	if value.Days == 0 {
+		value.Enabled = false
+	}
+	var err error
+	value.InternalSquadUUIDs, err = normalizeUUIDStrings(value.InternalSquadUUIDs)
+	if err != nil {
+		return fmt.Errorf("invalid grace access internal squad: %w", err)
+	}
+	if value.Enabled && len(value.InternalSquadUUIDs) == 0 {
+		return errors.New("grace access requires at least one internal squad")
+	}
+	return nil
+}
+
+func validatePanel(value *PanelSettings, defaults PanelSettings) error {
+	value.UsernameTemplate = limit(strings.TrimSpace(value.UsernameTemplate), 128)
+	if value.UsernameTemplate == "" {
+		value.UsernameTemplate = defaults.UsernameTemplate
+	}
+	allowed := strings.NewReplacer("{{customer_id}}", "", "{{telegram_id}}", "")
+	if strings.Contains(allowed.Replace(value.UsernameTemplate), "{{") || strings.Contains(allowed.Replace(value.UsernameTemplate), "}}") {
+		return errors.New("invalid panel username template variable")
+	}
+	if !strings.Contains(value.UsernameTemplate, "{{customer_id}}") && !strings.Contains(value.UsernameTemplate, "{{telegram_id}}") {
+		return errors.New("panel username template requires customer_id or telegram_id")
+	}
+	return nil
+}
+
+func normalizeUUIDStrings(values []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		value, err := normalizeOptionalUUID(raw)
+		if err != nil {
+			return nil, err
+		}
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func normalizeOptionalUUID(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	value, err := uuid.Parse(raw)
+	if err != nil || value == uuid.Nil {
+		return "", errors.New("invalid UUID")
+	}
+	return value.String(), nil
+}
+
+func inferPlanMonths(id string) int {
+	prefix := strings.SplitN(id, "m", 2)[0]
+	months, err := strconv.Atoi(prefix)
+	if err != nil || months < 1 || months > 120 {
+		return 0
+	}
+	return months
+}
+
+func planTitleRU(months int) string {
+	ending := "месяцев"
+	if months%10 == 1 && months%100 != 11 {
+		ending = "месяц"
+	} else if months%10 >= 2 && months%10 <= 4 && (months%100 < 12 || months%100 > 14) {
+		ending = "месяца"
+	}
+	return fmt.Sprintf("%d %s", months, ending)
+}
+
+func planTitleEN(months int) string {
+	ending := "months"
+	if months == 1 {
+		ending = "month"
+	}
+	return fmt.Sprintf("%d %s", months, ending)
+}
+
+func planTitleFA(months int) string {
+	return fmt.Sprintf("%d ماه", months)
+}
+
+func planTitleDaysRU(days int) string {
+	ending := "дней"
+	if days%10 == 1 && days%100 != 11 {
+		ending = "день"
+	} else if days%10 >= 2 && days%10 <= 4 && (days%100 < 12 || days%100 > 14) {
+		ending = "дня"
+	}
+	return fmt.Sprintf("%d %s", days, ending)
+}
+
+func planTitleDaysEN(days int) string {
+	if days == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", days)
+}
+
+func planTitleDaysFA(days int) string {
+	return fmt.Sprintf("%d روز", days)
+}
+
+func cloneSettings(value Settings) Settings {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return DefaultSettings()
+	}
+	var clone Settings
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return DefaultSettings()
+	}
+	return clone
+}
+
+func isSafeAssetURL(value string) bool {
+	if strings.HasPrefix(value, "/mini-app/") || strings.HasPrefix(value, "/assets/") || strings.HasPrefix(value, "assets/") {
+		return true
+	}
+	return isSafeWebURL(value)
+}
+
+func isSafeWebURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return parsed.Scheme == "https" || parsed.Scheme == "http"
+}
+
+func ParseTelegramChannelChatID(raw string) (any, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	if strings.HasPrefix(raw, "-100") {
+		chatID, err := strconv.ParseInt(raw, 10, 64)
+		return chatID, err == nil
+	}
+	if strings.HasPrefix(raw, "@") {
+		username := strings.TrimPrefix(raw, "@")
+		if telegramUserPattern.MatchString(username) {
+			return "@" + username, true
+		}
+		return nil, false
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		parsed, err := url.Parse(raw)
+		if err != nil || !strings.EqualFold(parsed.Host, "t.me") {
+			return nil, false
+		}
+		raw = strings.Trim(parsed.Path, "/")
+	}
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, "t.me/"))
+	raw = strings.TrimPrefix(raw, "@")
+	if index := strings.Index(raw, "/"); index >= 0 {
+		raw = raw[:index]
+	}
+	if !telegramUserPattern.MatchString(raw) {
+		return nil, false
+	}
+	return "@" + raw, true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func limit(value string, max int) string {
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	return string(runes[:max])
+}

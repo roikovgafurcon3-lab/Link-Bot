@@ -1,0 +1,2049 @@
+import { animateAdminEntrance } from "./admin-entrance.mjs";
+import React, { useState, useRef, useLayoutEffect, useMemo } from "react";
+import "@fontsource/fira-mono/400.css";
+import "@fontsource/fira-mono/500.css";
+import "@fontsource/fira-mono/700.css";
+import "@fontsource/unbounded/700.css";
+import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
+import {
+  MantineProvider,
+  createTheme,
+  defaultVariantColorsResolver,
+  Button,
+  ActionIcon,
+  Card,
+  Group,
+  Stack,
+  Text,
+  Title,
+  ThemeIcon,
+  Menu,
+  Modal,
+  Drawer,
+  NavLink,
+  Divider,
+  Badge,
+  TextInput,
+  Textarea,
+  NativeSelect,
+  Switch,
+  Checkbox,
+  Tooltip,
+  SimpleGrid,
+  NumberInput,
+  MultiSelect,
+  Select,
+  Progress,
+  Accordion,
+  Alert,
+  UnstyledButton,
+  Tabs,
+  CopyButton,
+} from "@mantine/core";
+import {
+  MantineReactTable,
+  useMantineReactTable,
+} from "@kastov/mantine-react-table-open";
+import { MRT_Localization_RU } from "@kastov/mantine-react-table-open/locales/ru/index.esm.mjs";
+import {
+  PiUsers,
+  PiStar,
+  PiSlidersHorizontal,
+  PiCaretDown,
+  PiCaretLeft,
+  PiSignOut,
+  PiArrowsClockwise,
+  PiPlus,
+  PiPencilSimple,
+  PiCopy,
+  PiTrash,
+  PiList,
+  PiSquaresFour,
+  PiShieldCheck,
+  PiCreditCard,
+  PiGlobe,
+  PiArrowSquareOut,
+  PiCheck,
+  PiHardDrives,
+  PiX,
+  PiGear,
+  PiChartLine,
+  PiDevices,
+  PiLightning,
+  PiMagnifyingGlass,
+  PiEye,
+  PiEyeSlash,
+} from "react-icons/pi";
+import "@mantine/core/styles.css";
+import "@mantine/dates/styles.css";
+import "@kastov/mantine-react-table-open/styles.css";
+import "./styles.css";
+import "./reference-theme.css";
+import { UserDialog } from "./user-dialog.jsx";
+import { Overview } from "./overview.jsx";
+import { Users } from "./users-table.jsx";
+import { Partners } from "./partners.jsx";
+import { Broadcast } from "./broadcast.jsx";
+import { Promocodes } from "./promocodes.jsx";
+import { SectionToolbar } from "./section-toolbar.jsx";
+import "./users-page.css";
+import { userDateKey } from "./users-list-data.mjs";
+import { FinanceChart } from "./finance-chart.jsx";
+import { LayoutEditor as Layout } from "./layout-editor.jsx";
+import { snapshot, controlKey, selectedTab } from "./adapter-state.mjs";
+import {
+  TbBrandGithub,
+  TbLanguage,
+  TbBook,
+  TbChartBar,
+  TbLayersIntersect,
+  TbMessageCircle,
+  TbDiscount,
+  TbMail,
+  TbPlug,
+  TbFileText,
+  TbPalette,
+  TbActivity,
+  TbTestPipe,
+  TbToggleRight,
+  TbClock,
+  TbAlertTriangle,
+  TbSparkles,
+  TbBell,
+  TbCopy,
+} from "react-icons/tb";
+import {
+  PiClockCountdownDuotone,
+  PiClockUserDuotone,
+  PiProhibitDuotone,
+  PiPulseDuotone,
+  PiUsersDuotone,
+  PiPercent,
+} from "react-icons/pi";
+
+// Theme and navigation proportions adapted from remnawave/frontend, AGPL-3.0.
+const theme = createTheme({
+  fontFamily:
+    'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  fontFamilyMonospace: '"Fira Mono", "JetBrains Mono", monospace',
+  fontSizes: { xs: "12px", sm: "13px", md: "14px", lg: "16px", xl: "18px" },
+  lineHeights: { xs: "1.3", sm: "1.4", md: "1.45", lg: "1.45", xl: "1.4" },
+  spacing: { xs: "8px", sm: "10px", md: "12px", lg: "16px", xl: "24px" },
+  primaryColor: "cyan",
+  primaryShade: 8,
+  autoContrast: true,
+  luminanceThreshold: 0.3,
+  breakpoints: { xs: "30em", sm: "40em", md: "48em", lg: "64em", xl: "80em" },
+  defaultRadius: "md",
+  radius: { md: "6px", lg: "10px" },
+  headings: {
+    fontWeight: "600",
+    sizes: {
+      h1: { fontSize: "34px", lineHeight: "1.3" },
+      h2: { fontSize: "26px", lineHeight: "1.35" },
+      h3: { fontSize: "22px", lineHeight: "1.4" },
+      h4: { fontSize: "18px", lineHeight: "1.45" },
+      h5: { fontSize: "16px", lineHeight: "1.4" },
+      h6: { fontSize: "14px", lineHeight: "1.4" },
+    },
+  },
+  focusRing: "auto",
+  colors: {
+    dark: [
+      "#e8ecf2",
+      "#ccd2db",
+      "#a8b0bc",
+      "#7e8896",
+      "#262628",
+      "#1b1c1e",
+      "#101113",
+      "#0b0c0e",
+      "#050607",
+      "#040506",
+    ],
+  },
+  variantColorResolver(input) {
+    if (input.variant === "soft") {
+      const c = input.theme.colors[input.color || "gray"];
+      return {
+        background: `linear-gradient(135deg, ${c[6]}26, ${c[7]}1a)`,
+        border: `1px solid ${c[6]}4d`,
+        color: `var(--mantine-color-${input.color || "gray"}-4)`,
+        hover: c[4] + "1a",
+      };
+    }
+    return defaultVariantColorsResolver(input);
+  },
+  components: {
+    TextInput: TextInput.extend({ defaultProps: { size: "sm" } }),
+    Textarea: Textarea.extend({ defaultProps: { size: "sm" } }),
+    NativeSelect: NativeSelect.extend({ defaultProps: { size: "sm" } }),
+    NumberInput: NumberInput.extend({ defaultProps: { size: "sm", hideControls: true } }),
+    Select: Select.extend({
+      defaultProps: {
+        size: "sm",
+        comboboxProps: { withinPortal: true, portalProps: { target: "#app" } },
+      },
+    }),
+    MultiSelect: MultiSelect.extend({
+      defaultProps: {
+        size: "sm",
+        comboboxProps: { withinPortal: true, portalProps: { target: "#app" } },
+      },
+    }),
+    Button: Button.extend({
+      defaultProps: { variant: "light", radius: "md", size: "sm" },
+      styles: {
+        root: {
+          height: 32,
+          transition:
+            "background-color .18s ease, border-color .18s ease, color .18s ease",
+        },
+      },
+    }),
+    ActionIcon: ActionIcon.extend({
+      defaultProps: { variant: "subtle", radius: "sm", size: 30 },
+    }),
+    Card: Card.extend({
+      defaultProps: { withBorder: true, padding: "md", shadow: "none" },
+    }),
+    Modal: Modal.extend({
+      defaultProps: {
+        centered: true,
+        radius: "md",
+        withinPortal: true,
+        portalProps: { target: "#app" },
+        zIndex: 300,
+        transitionProps: { transition: "fade", duration: 200 },
+        closeButtonProps: { "aria-label": "Закрыть" },
+      },
+    }),
+    Menu: Menu.extend({
+      defaultProps: {
+        withinPortal: true,
+        portalProps: { target: "#app" },
+        shadow: "md",
+        radius: "md",
+      },
+    }),
+    Tooltip: Tooltip.extend({
+      defaultProps: {
+        withinPortal: true,
+        portalProps: { target: "#app" },
+        radius: "md",
+        withArrow: true,
+        transitionProps: { transition: "fade", duration: 180 },
+        arrowSize: 2,
+        color: "dark.6",
+        styles: {
+          tooltip: { border: "1px solid var(--mantine-color-dark-4)" },
+        },
+      },
+    }),
+  },
+});
+let mountedRoot, mountedElement, mountedSignature;
+const TorrentIcon = ({ size = 16 }) => <span className="app-svg-icon app-svg-icon--diagnostics" style={{ width: size, height: size }} aria-hidden="true" />;
+const glyphs = {
+  users: PiUsers,
+  cartShopping: PiCreditCard,
+  server: PiHardDrives,
+  chartLine: PiChartLine,
+  grid: PiSquaresFour,
+  adminSubscriptions: TbLayersIntersect,
+  sms: TbMessageCircle,
+  star: PiStar,
+  adminPromocodes: TbDiscount,
+  adminBroadcast: TbMail,
+  adminIntegrations: TbPlug,
+  adminContent: TbFileText,
+  adminAppearance: TbPalette,
+  language: TbLanguage,
+  adminDiagnostics: TbActivity,
+  adminTorrents: TorrentIcon,
+  shield: PiShieldCheck,
+  adminFeatures: TbToggleRight,
+  adminTrial: TbClock,
+  adminMaintenance: TbAlertTriangle,
+  sparkles: TbSparkles,
+  adminPush: TbBell,
+};
+const glyph = (name) => {
+  const Icon = glyphs[name] || PiSlidersHorizontal;
+  return <Icon size={16} />;
+};
+const actionProps = (action, value, extra = {}) => ({
+  "data-action": action,
+  "data-value": value,
+  ...extra,
+});
+
+// Keep the authenticated application's event delegation and draft validation intact.
+// Native inputs remain uncontrolled: typing does not replace a field or lose its caret.
+function Field({ node, label, toggle = false, ...props }) {
+  const p = attributes(node),
+    ref = useRef(null);
+  const isCheck = node.type === "checkbox" || node.type === "radio";
+  const [checked, setChecked] = useState(node.checked);
+  useLayoutEffect(() => {
+    if (isCheck) setChecked(node.checked);
+  }, [node.checked]);
+  useLayoutEffect(() => {
+    if (ref.current && document.activeElement !== ref.current) {
+      if (isCheck) ref.current.checked = node.checked;
+      else if (node.type !== "file") ref.current.value = node.value;
+    }
+  }, [node.value, node.checked]);
+  delete p.className;
+  delete p.style;
+  delete p.value;
+  delete p.checked;
+  const common = {
+    ...p,
+    ...props,
+    ref,
+    label,
+    defaultValue: isCheck || node.type === "file" ? undefined : node.value,
+    ...(isCheck ? { value: node.value } : {}),
+  };
+  if (isCheck) {
+    const Control = node.type === "checkbox" || toggle ? Switch : Checkbox;
+    return (
+      <Control
+        {...common}
+        checked={checked}
+        onChange={(e) => setChecked(e.currentTarget.checked)}
+        label={label}
+      />
+    );
+  }
+  if (node.type === "color") return <input {...common} />;
+  if (node.tagName === "SELECT")
+    return (
+      <NativeSelect
+        {...common}
+        data={[...node.options].map((o) => ({
+          value: o.value,
+          label: o.textContent,
+          disabled: o.disabled,
+        }))}
+      />
+    );
+  if (node.tagName === "TEXTAREA")
+    return <Textarea {...common} autosize minRows={Number(node.rows) || 3} />;
+  return <TextInput {...common} />;
+}
+function attributes(node) {
+  const p = {};
+  for (const a of node.attributes) {
+    const n = a.name;
+    if (n === "style") {
+      const style = {};
+      for (const k of node.style)
+        style[
+          k.startsWith("--")
+            ? k
+            : k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+        ] = node.style.getPropertyValue(k);
+      p.style = style;
+    } else if (n === "class") p.className = a.value;
+    else if (n === "readonly") p.readOnly = true;
+    else if (n === "for") p.htmlFor = a.value;
+    else if (
+      [
+        "disabled",
+        "hidden",
+        "multiple",
+        "required",
+        "readOnly",
+        "checked",
+      ].includes(n)
+    )
+      p[n] = true;
+    else if (n === "value") p.defaultValue = a.value;
+    else if (n === "tabindex") p.tabIndex = Number(a.value);
+    else if (n === "maxlength") p.maxLength = Number(a.value);
+    else if (n === "inputmode") p.inputMode = a.value;
+    else if (!n.startsWith("on") && n !== "selected") p[n] = a.value;
+  }
+  return p;
+}
+function TorrentWorkspace({node}) {
+  const ref=useRef(null),markup=node.outerHTML;
+  useLayoutEffect(()=>{ref.current?.replaceChildren(node.cloneNode(true));},[markup]);
+  return <div ref={ref} className={node.matches(".interactive-editor")?"rn-interactive-workspace":"rn-torrent-workspace"} />;
+}
+function convert(node, key) {
+  if (node.nodeType === 3) return node.textContent;
+  if (node.nodeType !== 1) return null;
+  const tag = node.tagName.toLowerCase(),
+    p = attributes(node);
+  p.key = key;
+  if(node.matches('.torrent-workspace,.ab-workspace,.interactive-editor')) return <TorrentWorkspace key={key} node={node} />;
+  if (tag === "script" || tag === "style") return null;
+  if (
+    node.matches(
+      ".admin-editor__header,.admin-save-bar,.rw-savebar,.admin-editor__save,.admin-plan-editor",
+    )
+  )
+    return null;
+  if (node.dataset.financeSeries)
+    return (
+      <FinanceChart key={key} series={JSON.parse(node.dataset.financeSeries)} />
+    );
+  if (node.matches(".admin-finance-chart__empty"))
+    return <FinanceChart key={key} series={[]} />;
+  if (node.matches(".admin-trial-editor")) {
+    const grace = Boolean(
+      node.querySelector('[data-setting-path="grace.enabled"]'),
+    );
+    const squads = node.querySelector(":scope > .admin-squads");
+    return (
+      <div key={key} className="rn-settings-grid">
+        <section className="rn-settings-panel">
+          <div className="rn-panel-heading">
+            <ThemeIcon size={30} variant="soft" color="gray">
+              <TbClock size={18} />
+            </ThemeIcon>
+            <div>
+              <h3>{grace ? "Временный доступ" : "Пробный период"}</h3>
+              <p>Параметры подписки и ограничения</p>
+            </div>
+          </div>
+          {[...node.childNodes]
+            .filter((n) => n !== squads)
+            .map((n, i) => convert(n, i))}
+        </section>
+        {squads && (
+          <section className="rn-settings-panel rn-squad-panel">
+            {convert(squads, "squads")}
+          </section>
+        )}
+      </div>
+    );
+  }
+  if (tag === "svg")
+    return <svg {...p} dangerouslySetInnerHTML={{ __html: node.innerHTML }} />;
+  if (node.dataset.appIcon && glyphs[node.dataset.appIcon]) {
+    const Icon = glyphs[node.dataset.appIcon];
+    return <Icon key={key} size={20} aria-hidden="true" />;
+  }
+  if (
+    node.matches('.tabs,[role="tablist"],.admin-content-groups') &&
+    node.querySelector(":scope > button[data-action]")
+  ) {
+    const tabs = [...node.querySelectorAll(":scope > button[data-action]")];
+    const selected = selectedTab(tabs);
+    const segmented = node.matches(
+      ".admin-content-groups,.admin-broadcast__tabs",
+    );
+    return (
+      <Tabs
+        key={key}
+        value={selected.dataset.value}
+        variant={segmented ? "pills" : "default"}
+        className={`rn-native-tabs ${segmented ? "rn-segmented-tabs" : ""}`}
+      >
+        <Tabs.List aria-label={node.getAttribute("aria-label") || "Разделы"}>
+          {tabs.map((tab) => (
+            <Tabs.Tab
+              key={tab.dataset.value}
+              value={tab.dataset.value}
+              {...attributes(tab)}
+              className={undefined}
+              tabIndex={undefined}
+              disabled={tab.disabled}
+            >
+              {[...tab.childNodes].map((n, i) => convert(n, i))}
+            </Tabs.Tab>
+          ))}
+        </Tabs.List>
+      </Tabs>
+    );
+  }
+  if (tag === "label") {
+    const control = node.querySelector(
+      ":scope > input,:scope > textarea,:scope > select",
+    );
+    if (control) {
+      if (control.type === "color") {
+        return (
+          <label {...p} className={`${node.className} rn-color-field`}>
+            <Field
+              node={control}
+              aria-label={node.querySelector("strong")?.textContent || "Цвет"}
+            />
+            {[...node.childNodes]
+              .filter((n) => n !== control)
+              .map((n, i) => convert(n, i))}
+          </label>
+        );
+      }
+      if (node.classList.contains("admin-settings-search__field")) {
+        return (
+          <div key={key} className="rn-search-field">
+            <Field
+              node={control}
+              leftSection={<PiMagnifyingGlass size={14} />}
+            />
+          </div>
+        );
+      }
+      if (control.type === "file") {
+        const fileProps = attributes(control);
+        delete fileProps.defaultValue;
+        const Control = node.classList.contains("support-reply__attach")
+          ? ActionIcon
+          : Button;
+        const label =
+          node.getAttribute("aria-label") ||
+          node.textContent.trim() ||
+          "Выбрать файл";
+        return (
+          <Control
+            key={key}
+            component="label"
+            variant="outline"
+            size={Control === ActionIcon ? "lg" : "sm"}
+            className="rn-file-picker"
+            aria-label={label}
+            disabled={control.disabled}
+            role="button"
+            tabIndex={control.disabled ? -1 : 0}
+            onKeyDown={(event) => {
+              if (!control.disabled && ["Enter", " "].includes(event.key)) {
+                event.preventDefault();
+                event.currentTarget.querySelector("input").click();
+              }
+            }}
+          >
+            {[...node.childNodes]
+              .filter((n) => n !== control)
+              .map((n, i) => convert(n, i))}
+            <input {...fileProps} className="rn-file-input" />
+          </Control>
+        );
+      }
+      const toggle = control.type === "checkbox" ||
+        node.matches(
+          ".admin-toggle,.admin-integration__toggle,.admin-moynalog__switch",
+        ) || control.getAttribute("role") === "switch";
+      // Old toggle classes style every descendant input/span. Keep the native
+      // Switch isolated and carry only the outer layout role across the bridge.
+      const fieldClass = toggle
+        ? `rn-toggle ${node.matches(".admin-ai__power") ? "rn-ai-power" : ""}`
+        : node.className;
+      const label = [...node.childNodes]
+        .filter(
+          (n) =>
+            n !== control &&
+            !(n.nodeType === 1 && n.getAttribute("aria-hidden") === "true"),
+        )
+        .map((n, i) => convert(n, i));
+      return (
+        <div
+          key={controlKey(control, key)}
+          className={`rn-field ${["checkbox", "radio"].includes(control.type) ? "rn-check" : ""} ${fieldClass}`}
+          hidden={node.hidden}
+        >
+          <Field node={control} label={label} toggle={toggle} />
+        </div>
+      );
+    }
+  }
+  if (["input", "textarea", "select"].includes(tag))
+    return <Field key={controlKey(node, key)} node={node} />;
+  const children = [...node.childNodes].map((n, i) => convert(n, i));
+  if (tag === "button") {
+    if (
+      node.matches(
+        ".card,.menu-card,.menu-row,.profile-row,.admin-finance-period-option",
+      ) ||
+      node.querySelector("div,strong,small,img,video,b,article,section")
+    ) {
+      p.className = `${p.className || ""} rn-structured-button ${node.matches(".card,.menu-card,.menu-row,.profile-row") ? "rn-clickable-card" : ""}`;
+      return <UnstyledButton {...p}>{children}</UnstyledButton>;
+    }
+    const danger = /delete|remove|block$|reject/.test(
+      node.dataset.action || "",
+    );
+    const name = node.getAttribute("aria-label") || node.textContent.trim();
+    p.className = `${p.className || ""} rn-adapted-button`;
+    if (!node.textContent.trim())
+      return (
+        <ActionIcon
+          {...p}
+          aria-label={name || "Открыть"}
+          color={danger ? "red" : "gray"}
+          size="lg"
+        >
+          {children}
+        </ActionIcon>
+      );
+    return (
+      <Button {...p} color={danger ? "red" : "gray"} size="sm">
+        {children}
+      </Button>
+    );
+  }
+  return [
+    "img",
+    "br",
+    "hr",
+    "area",
+    "base",
+    "col",
+    "embed",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+  ].includes(tag)
+    ? React.createElement(tag, p)
+    : React.createElement(tag, p, children);
+}
+function Legacy({ node }) {
+  // Background refreshes rebuild the cabinet's detached DOM. Keep the React
+  // subtree when its markup has not changed; in-progress fields stay mounted.
+  const markup = node?.outerHTML || "";
+  return useMemo(() => (node ? convert(node, "content") : null), [markup]);
+}
+function Action({ action, value, label, children, ...props }) {
+  return (
+    <Button {...actionProps(action, value)} {...props}>
+      {children || label}
+    </Button>
+  );
+}
+function IconAction({ action, value, label, children, ...props }) {
+  return (
+    <Tooltip label={label}>
+      <ActionIcon
+        aria-label={label}
+        {...actionProps(action, value)}
+        size={30}
+        {...props}
+      >
+        {children}
+      </ActionIcon>
+    </Tooltip>
+  );
+}
+function Metric({
+  title,
+  value,
+  icon: Icon = PiUsers,
+  color = "gray",
+  caption,
+}) {
+  return (
+    <Card className="rn-metric" p="md">
+      <Group wrap="nowrap" gap="sm">
+        <ThemeIcon size={30} radius="sm" variant="soft" color={color}>
+          <Icon size={18} />
+        </ThemeIcon>
+        <Stack gap={0}>
+          <Text size="xs" c="dimmed">
+            {title}
+          </Text>
+          <Text className="rn-number" size="md" fw={700}>
+            {value}
+          </Text>
+          {caption && (
+            <Text size="xs" c="dimmed">
+              {caption}
+            </Text>
+          )}
+        </Stack>
+      </Group>
+    </Card>
+  );
+}
+function DataTable({
+  columns,
+  data,
+  id,
+  extra,
+  paginate = true,
+  variant,
+  loading = false,
+  onTable,
+  initialFilters = [],
+}) {
+  const usersTable = variant === "users";
+  const dataRef = useRef();
+  dataRef.current = snapshot(data, dataRef.current);
+  const initial = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem("admin.table." + id)) || {};
+    } catch {
+      return {};
+    }
+  }, [id]);
+  const [density, setDensity] = useState(initial.density || "xxs");
+  const [columnVisibility, setVisibility] = useState(
+    initial.columnVisibility || {},
+  );
+  const [columnOrder, setOrder] = useState(initial.columnOrder || []);
+  useLayoutEffect(() => {
+    try {
+      localStorage.setItem(
+        "admin.table." + id,
+        JSON.stringify({ density, columnVisibility, columnOrder }),
+      );
+    } catch {}
+  }, [density, columnVisibility, columnOrder, id]);
+  const table = useMantineReactTable({
+    columns,
+    data: dataRef.current.value,
+    localization: MRT_Localization_RU,
+    enableColumnOrdering: true,
+    enableColumnActions: !usersTable,
+    enableColumnResizing: true,
+    enableColumnPinning: true,
+    enableRowSelection: true,
+    enableStickyHeader: usersTable,
+    enableRowVirtualization: usersTable,
+    rowVirtualizerOptions: {
+      overscan: 8,
+      estimateSize: () => (density === "md" ? 52 : 36),
+    },
+    autoResetPageIndex: false,
+    enablePagination: paginate,
+    enableTopToolbar: !usersTable,
+    enableBottomToolbar: !usersTable,
+    getRowId: (row, index) =>
+      String(row.key ?? row.customerId ?? row.id ?? row.uuid ?? index),
+    enableFilters: true,
+    enableGlobalFilter: !usersTable,
+    layoutMode: "grid",
+    displayColumnDefOptions: {
+      "mrt-row-select": { size: 50, minSize: 50, grow: false },
+    },
+    initialState: {
+      showColumnFilters: !usersTable,
+      ...(usersTable
+        ? {
+            columnFilters: initialFilters,
+            columnVisibility: { description: false, type: false },
+            sorting: [{ id: "createdAt", desc: true }],
+          }
+        : {}),
+      pagination: { pageSize: 20, pageIndex: 0 },
+      columnPinning: { right: usersTable ? [] : ["actions"] },
+    },
+    state: {
+      density,
+      ...(usersTable
+        ? {
+            isLoading: loading && !data.length,
+            showProgressBars: loading && Boolean(data.length),
+          }
+        : {}),
+      columnVisibility: usersTable
+        ? { description: false, type: false, ...columnVisibility }
+        : columnVisibility,
+      ...(columnOrder.length ? { columnOrder } : {}),
+    },
+    onDensityChange: setDensity,
+    onColumnVisibilityChange: setVisibility,
+    onColumnOrderChange: setOrder,
+    mantinePaperProps: { withBorder: false, radius: 0, shadow: "none" },
+    mantineTableProps: { highlightOnHover: true },
+    mantineFilterTextInputProps: {
+      variant: "unstyled",
+      placeholder: "Фильтр…",
+    },
+    mantineTableContainerProps: {
+      style: {
+        maxHeight: usersTable ? "min(680px, 68dvh)" : "none",
+        overflowX: "auto",
+        overflowY: usersTable ? "auto" : "hidden",
+        overflowAnchor: "none",
+      },
+    },
+    mantineTableBodyRowProps: ({ row }) =>
+      usersTable
+        ? {
+            tabIndex: 0,
+            "aria-label": `Открыть пользователя ${row.original.panelUsername || row.original.username}`,
+            style: { cursor: "pointer" },
+            onClick: (event) => {
+              if (event.target.closest("input,button,a,[role=checkbox],label"))
+                return;
+              event.currentTarget.dispatchEvent(
+                new CustomEvent("admin-row-open", {
+                  bubbles: true,
+                  detail: row.original.key || row.original.customerId,
+                }),
+              );
+            },
+            onKeyDown: (event) => {
+              if (
+                event.target !== event.currentTarget ||
+                !["Enter", " "].includes(event.key)
+              )
+                return;
+              event.preventDefault();
+              event.currentTarget.dispatchEvent(
+                new CustomEvent("admin-row-open", {
+                  bubbles: true,
+                  detail: row.original.key || row.original.customerId,
+                }),
+              );
+            },
+          }
+        : {},
+    mantineTableHeadCellProps: {
+      style: { fontSize: 12, background: usersTable ? "#181b20" : "#101113" },
+    },
+    mantineTopToolbarProps: {
+      style: { background: usersTable ? "#141619" : "#101113" },
+    },
+    mantineBottomToolbarProps: {
+      style: { background: usersTable ? "#141619" : "#101113" },
+    },
+    mantineTableBodyCellProps: ({ column }) => ({
+      style: {
+        fontSize: 13,
+        background: column.getIsPinned() ? "#101113" : undefined,
+      },
+    }),
+    renderTopToolbarCustomActions: ({ table }) =>
+      typeof extra === "function" ? extra(table) : extra,
+  });
+  useLayoutEffect(() => {
+    onTable?.(table);
+  }, [table, onTable]);
+  return (
+    <div className="rn-data-table" data-density={density}>
+      {usersTable && (typeof extra === "function" ? extra(table) : extra)}
+      <div className={usersTable ? "rn-users-grid" : undefined}>
+        <MantineReactTable table={table} />
+      </div>
+    </div>
+  );
+}
+function UserMetrics({ users, hidden, overview }) {
+  const counts = users.panelCounts;
+  const total = counts?.totalUsers;
+  const month = userDateKey(new Date().toISOString()).slice(0, 7);
+  const registrations =
+    overview?.users?.source === "panel" && overview.users.daily
+      ? (overview.users.daily || [])
+          .filter((point) => point.date.startsWith(month))
+          .reduce((sum, point) => sum + point.value, 0)
+      : null;
+  return (
+    <SimpleGrid
+      className="rn-user-metrics"
+      cols={{ base: 2, md: 5 }}
+      spacing="xs"
+      mb="sm"
+      title="Статистика пользователей Remnawave"
+    >
+      {[
+        ["Всего пользователей", counts?.totalUsers, PiUsersDuotone, "#5d92ff"],
+        ["Активные", counts?.statusCounts?.ACTIVE, PiPulseDuotone, "#1dcca4"],
+        [
+          "Истекшие",
+          counts?.statusCounts?.EXPIRED,
+          PiClockUserDuotone,
+          "#f16476",
+        ],
+        [
+          "Ограниченные",
+          counts?.statusCounts?.LIMITED,
+          PiClockCountdownDuotone,
+          "#e9a332",
+        ],
+        [
+          "Отключены",
+          counts?.statusCounts?.DISABLED,
+          PiProhibitDuotone,
+          "#a17cf6",
+        ],
+      ].map(([title, value, Icon, color], index) => {
+        const percent = total && value != null ? (value / total) * 100 : null;
+        return (
+          <div
+            className="rn-user-metric"
+            key={title}
+            style={{ "--metric-color": color }}
+          >
+            <div className="rn-user-metric-icon">
+              <Icon size={26} />
+            </div>
+            <div className="rn-user-metric-body">
+              <span>{title}</span>
+              <div className="rn-user-metric-number">
+                <strong className="rn-private-value" aria-hidden={hidden}>
+                  {value == null ? "—" : Number(value).toLocaleString("ru")}
+                </strong>
+                {index > 0 && (
+                  <small className="rn-private-value" aria-hidden={hidden}>
+                    {percent == null
+                      ? "—"
+                      : percent > 0 && percent < 1
+                        ? "<1%"
+                        : `${Math.round(percent)}%`}
+                  </small>
+                )}
+              </div>
+              {index > 0 ? (
+                <div className="rn-user-metric-track">
+                  <i
+                    style={{
+                      width: `${Math.max(0, Math.min(100, percent || 0))}%`,
+                    }}
+                  />
+                </div>
+              ) : (
+                <small>
+                  {registrations == null ? null : (
+                    <>
+                      <span className="rn-private-value" aria-hidden={hidden}>
+                        +{registrations}
+                      </span>{" "}
+                      за месяц
+                    </>
+                  )}
+                </small>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </SimpleGrid>
+  );
+}
+function Plans({ model }) {
+  const columns = useMemo(
+    () => [
+      {
+        accessorKey: "name",
+        header: "Название",
+        Cell: ({ row }) => (
+          <Action
+            action="admin-edit-plan"
+            value={row.original.id}
+            variant="subtle"
+          >
+            {row.original.name ||
+              `${row.original.days || row.original.months} ${row.original.days ? "дней" : "мес."}`}
+          </Action>
+        ),
+      },
+      {
+        accessorKey: "enabled",
+        header: "Статус",
+        Cell: ({ cell, row }) => (
+          <Switch
+            aria-label="Тариф активен"
+            key={String(cell.getValue())}
+            defaultChecked={Boolean(cell.getValue())}
+            data-setting-path={`plans.${row.index}.enabled`}
+            data-setting-type="boolean"
+            label={cell.getValue() ? "ACTIVE" : "DISABLED"}
+          />
+        ),
+      },
+      {
+        id: "duration",
+        header: "Срок",
+        accessorFn: (p) => (p.days ? `${p.days} дней` : `${p.months} мес.`),
+      },
+      { accessorKey: "priceRub", header: "Цена, ₽" },
+      {
+        accessorKey: "trafficGb",
+        header: "Трафик, ГБ",
+        Cell: ({ cell }) => cell.getValue() || "∞",
+      },
+      {
+        accessorKey: "deviceLimit",
+        header: "Устройства",
+        Cell: ({ cell }) => cell.getValue() || "∞",
+      },
+      {
+        id: "actions",
+        header: "Действия",
+        enableColumnFilter: false,
+        enableSorting: false,
+        Cell: ({ row }) => (
+          <Group gap={6}>
+            <IconAction
+              action="admin-edit-plan"
+              value={row.original.id}
+              label="Редактировать"
+            >
+              <PiPencilSimple />
+            </IconAction>
+            <IconAction
+              action="admin-toggle-plan-wide"
+              value={row.original.id}
+              label="Широкая карточка тарифа"
+            >
+              <PiSquaresFour />
+            </IconAction>
+            <IconAction
+              action="admin-delete-plan"
+              value={row.original.id}
+              label="Удалить тариф"
+              color="red"
+            >
+              <PiTrash />
+            </IconAction>
+          </Group>
+        ),
+      },
+    ],
+    [],
+  );
+  return (
+    <Stack gap="md">
+      <Card p={0} className="rn-table-card">
+        <DataTable
+          columns={columns}
+          data={model.plans}
+          id="plans"
+          extra={
+            <Group gap="xs" p="xs">
+              <Action
+                action="admin-open-device-packs"
+                leftSection={<PiDevices />}
+              >
+                Пакеты устройств
+              </Action>
+              <Action
+                action="admin-open-traffic-packs"
+                leftSection={<PiChartLine />}
+              >
+                Пакеты трафика
+              </Action>
+            </Group>
+          }
+        />
+      </Card>
+      <Accordion variant="separated">
+        <Accordion.Item value="order">
+          <Accordion.Control>
+            Порядок тарифов и способов оплаты
+          </Accordion.Control>
+          <Accordion.Panel>
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <Stack gap="xs">
+                {model.plans.map((p, i) => (
+                  <Group key={p.id} justify="space-between">
+                    <Text size="sm">{p.name || p.titleRu || p.id}</Text>
+                    <Group gap={4}>
+                      <Action
+                        action="admin-move-plan"
+                        value={i}
+                        data-direction="-1"
+                        disabled={i === 0}
+                      >
+                        ↑
+                      </Action>
+                      <Action
+                        action="admin-move-plan"
+                        value={i}
+                        data-direction="1"
+                        disabled={i === model.plans.length - 1}
+                      >
+                        ↓
+                      </Action>
+                    </Group>
+                  </Group>
+                ))}
+              </Stack>
+              <Stack gap="xs">
+                {model.paymentMethods.map((p, i) => (
+                  <Group
+                    key={p.id}
+                    justify="space-between"
+                    data-pay-order-id={p.id}
+                    wrap="nowrap"
+                  >
+                    <Stack gap={2} style={{flex: 1, minWidth: 0}}>
+                      <Text size="sm" lineClamp={1}>{p.label}</Text>
+                      <Text size="xs" c="dimmed" lineClamp={1}>{p.hint}</Text>
+                    </Stack>
+                    <Group gap={2} wrap="nowrap">
+                      <IconAction variant="subtle" action="admin-payment-method-edit" value={p.id} label={`Настроить подписи, логотип и методы: ${p.label}`}>
+                        <PiPencilSimple />
+                      </IconAction>
+                      {!["balance", "stars", "p2p"].includes(p.id) && <IconAction variant="subtle" action="admin-payment-method-duplicate" value={p.id} label={`Дублировать: ${p.label}`}><PiCopy /></IconAction>}
+                      <IconAction variant="subtle"
+                        action="move-pay-method-up"
+                        value={p.id}
+                        label={`Поднять ${p.label}`}
+                        disabled={i === 0}
+                      >
+                        ↑
+                      </IconAction>
+                      <IconAction variant="subtle"
+                        action="move-pay-method-down"
+                        value={p.id}
+                        label={`Опустить ${p.label}`}
+                        disabled={i === model.paymentMethods.length - 1}
+                      >
+                        ↓
+                      </IconAction>
+                    </Group>
+                  </Group>
+                ))}
+              </Stack>
+            </SimpleGrid>
+          </Accordion.Panel>
+        </Accordion.Item>
+      </Accordion>
+    </Stack>
+  );
+}
+function SubscriptionLink({ value }) {
+  if (!value) return null;
+  return (
+    <Group gap={6} wrap="nowrap" style={{ width: "100%", minWidth: 0 }}>
+      <Tooltip label={value}>
+        <Text size="xs" c="dimmed" truncate style={{ minWidth: 0, flex: 1 }}>
+          {value}
+        </Text>
+      </Tooltip>
+      <CopyButton value={value}>
+        {({ copied, copy }) => (
+          <Tooltip label={copied ? "Скопировано" : "Копировать подписку"}>
+            <ActionIcon
+              onClick={copy}
+              aria-label="Копировать подписку"
+              size="sm"
+              color={copied ? "teal" : "gray"}
+            >
+              <TbCopy size={16} />
+            </ActionIcon>
+          </Tooltip>
+        )}
+      </CopyButton>
+    </Group>
+  );
+}
+function NodeMetrics({ model }) {
+  const items = model.servers || [];
+  const online = items.filter((item) => item.online).length;
+  return (
+    <SimpleGrid
+      className="rn-node-metrics"
+      cols={{ base: 1, sm: 3 }}
+      spacing="xs"
+      mb="sm"
+    >
+      <Metric title="Всего нод" value={items.length} icon={PiHardDrives} />
+      <Metric
+        title="Онлайн"
+        value={online}
+        icon={PiPulseDuotone}
+        color="teal"
+      />
+      <Metric
+        title="Офлайн"
+        value={items.length - online}
+        icon={PiProhibitDuotone}
+        color="red"
+      />
+    </SimpleGrid>
+  );
+}
+function Nodes({ model }) {
+  const [query, setQuery] = useState("");
+  const items = model.servers || [];
+  const visible = items.filter(
+    (item) =>
+      (model.serverFilter === "online"
+        ? item.online
+        : model.serverFilter === "offline"
+          ? !item.online
+          : true) &&
+      `${item.name} ${item.address} ${item.countryCode}`
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
+  );
+  return (
+    <Stack gap="sm">
+      <Group className="rn-node-toolbar" justify="space-between">
+        <Tabs value={model.serverFilter || "all"} className="rn-native-tabs">
+          <Tabs.List aria-label="Статус нод">
+            {[
+              ["all", "Все"],
+              ["online", "Онлайн"],
+              ["offline", "Офлайн"],
+            ].map(([id, label]) => (
+              <Tabs.Tab
+                key={id}
+                value={id}
+                {...actionProps("set-server-filter", id)}
+              >
+                {label}
+              </Tabs.Tab>
+            ))}
+          </Tabs.List>
+        </Tabs>
+        <TextInput
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          leftSection={<PiMagnifyingGlass size={16} />}
+          placeholder="Название или адрес"
+          aria-label="Найти ноду"
+        />
+      </Group>
+      <div className="rn-node-list" role="list" aria-label="Ноды">
+        {visible.map((item) => (
+          <article
+            key={item.id || item.address || item.name}
+            role="listitem"
+            className="rn-node-row"
+            data-online={item.online}
+          >
+            <div className="rn-node-identity">
+              <ThemeIcon
+                size={24}
+                variant="soft"
+                color={item.online ? "teal" : "red"}
+              >
+                {item.online ? (
+                  <PiPulseDuotone size={16} />
+                ) : (
+                  <PiProhibitDuotone size={16} />
+                )}
+              </ThemeIcon>
+              <CountryFlag code={item.countryCode} />
+              <Text size="sm" fw={600}>
+                {item.name}
+              </Text>
+            </div>
+            <Text size="xs" className="rn-node-address rn-number">
+              <PiGlobe size={13} />
+              {item.address || "—"}
+            </Text>
+            <div className="rn-node-state">
+              <Badge
+                variant="outline"
+                color={item.online ? "teal" : "red"}
+                radius="sm"
+              >
+                {item.online ? "ONLINE" : "OFFLINE"}
+              </Badge>
+              <Text size="xs" c="dimmed">
+                {item.hidden ? "Скрыта в кабинете" : "Видна в кабинете"}
+              </Text>
+            </div>
+            {model.canManageNodes && (
+              <IconAction
+                action="admin-toggle-server-visibility"
+                value={item.id}
+                label={
+                  item.hidden
+                    ? "Показать ноду пользователям"
+                    : "Скрыть ноду от пользователей"
+                }
+                aria-pressed={!item.hidden}
+                disabled={!item.id || Boolean(model.nodeBusy)}
+              >
+                {item.hidden ? <PiEyeSlash size={18} /> : <PiEye size={18} />}
+              </IconAction>
+            )}
+          </article>
+        ))}
+        {!visible.length && (
+          <div className="rn-empty-state">Ноды не найдены</div>
+        )}
+      </div>
+    </Stack>
+  );
+}
+function CountryFlag({ code }) {
+  const [failed, setFailed] = useState(false);
+  const country = String(code || "").toLowerCase();
+  if (!/^[a-z]{2}$/.test(country)) return null;
+  return failed ? (
+    <Text size="xs" c="dimmed">
+      {country.toUpperCase()}
+    </Text>
+  ) : (
+    <img
+      className="rn-country-flag"
+      src={`https://flagcdn.com/24x18/${country}.png`}
+      alt={country.toUpperCase()}
+      width={20}
+      height={15}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+function Reviews({ model }) {
+  const reviews = model.reviews;
+  const columns = useMemo(
+    () => [
+      {
+        accessorKey: "username",
+        header: "Пользователь",
+        Cell: ({ row }) => (
+          <Action
+            action="open-review-detail"
+            value={row.original.id}
+            variant="subtle"
+          >
+            {row.original.username || "user"}
+          </Action>
+        ),
+      },
+      {
+        accessorKey: "rating",
+        header: "Оценка",
+        size: 120,
+        Cell: ({ cell }) => (
+          <Group gap={5} wrap="nowrap">
+            <PiStar color="var(--mantine-color-yellow-4)" />
+            <Text size="sm">{cell.getValue()} / 5</Text>
+          </Group>
+        ),
+      },
+      {
+        accessorKey: "comment",
+        header: "Комментарий",
+        size: 400,
+        Cell: ({ cell }) => (
+          <Text size="sm" lineClamp={2} style={{ whiteSpace: "normal" }}>
+            {cell.getValue()}
+          </Text>
+        ),
+      },
+      {
+        id: "actions",
+        header: "Действия",
+        enableColumnFilter: false,
+        Cell: ({ row }) => (
+          <Group gap={4} wrap="nowrap">
+            <IconAction
+              action="open-review-detail"
+              value={row.original.id}
+              label="Открыть отзыв"
+            >
+              <PiEye />
+            </IconAction>
+            {model.canDeleteReviews && (
+              <IconAction
+                action="admin-delete-review"
+                value={row.original.id}
+                label="Удалить отзыв"
+                color="red"
+              >
+                <PiTrash />
+              </IconAction>
+            )}
+          </Group>
+        ),
+      },
+    ],
+    [model.canDeleteReviews],
+  );
+  return (
+    <Stack gap="md">
+      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+        <Metric
+          title="Всего отзывов"
+          value={reviews.count || 0}
+          icon={PiUsers}
+          color="blue"
+        />
+        <Metric
+          title="Средняя оценка"
+          value={Number(reviews.average || 0).toLocaleString("ru", {
+            maximumFractionDigits: 1,
+          })}
+          icon={PiStar}
+          color="yellow"
+        />
+      </SimpleGrid>
+      <Card p={0} className="rn-table-card">
+        <DataTable
+          id="reviews"
+          columns={columns}
+          data={reviews.items || []}
+          extra={
+            <Group gap="xs" p="xs">
+              {model.canRewardReviews && (
+                <Action action="open-review-rewards" leftSection={<PiGear />}>
+                  Вознаграждение за отзыв
+                </Action>
+              )}
+              {reviews.canCreate && (
+                <Action action="open-review-compose" leftSection={<PiPlus />}>
+                  Добавить отзыв
+                </Action>
+              )}
+              {reviews.myReview && (
+                <Action action="open-review-detail" value={reviews.myReview.id}>
+                  Мой отзыв
+                </Action>
+              )}
+              {reviews.myReview && !reviews.myReview.rewardGranted && (
+                <Action action="retry-review-reward">
+                  Получить вознаграждение
+                </Action>
+              )}
+            </Group>
+          }
+        />
+      </Card>
+    </Stack>
+  );
+}
+function Dialogs({ nodes, dispatch }) {
+  return nodes.map((node, index) => {
+    const sheet = node.querySelector(".modal__sheet");
+    if (!sheet) return <Legacy key={index} node={node} />;
+    const close = node.querySelector(".modal__backdrop[data-action]")?.dataset
+      .action;
+    const header = sheet.querySelector(".modal__header");
+    const title =
+      header?.querySelector(".modal__title")?.textContent ||
+      header?.textContent ||
+      "Настройки";
+    const body = sheet.cloneNode(true);
+    body.removeAttribute("role");
+    body.removeAttribute("aria-modal");
+    body.removeAttribute("aria-labelledby");
+    const bodyHeader = body.querySelector(".modal__header");
+    if (bodyHeader) {
+      bodyHeader.querySelector(".modal__title")?.remove();
+      bodyHeader.querySelectorAll("button").forEach((button) => {
+        if (button.dataset.action === close) button.remove();
+      });
+      if (bodyHeader.textContent.trim())
+        bodyHeader.className = "rn-dialog-toolbar";
+      else bodyHeader.remove();
+    }
+    return (
+      <Modal
+        key={node.dataset.supportModal || close || index}
+        opened
+        onClose={() => close && dispatch(close)}
+        title={title}
+        size={/banner|thread/.test(sheet.className) ? "xl" : "lg"}
+        closeButtonProps={{ "aria-label": "Закрыть" }}
+        overlayProps={{ backgroundOpacity: 0.65, blur: 3 }}
+      >
+        <Legacy node={body} />
+      </Modal>
+    );
+  });
+}
+function Admin({ model, content, dialogs, dispatch }) {
+  const [mobile, setMobile] = useState(false),
+    [preferences, setPreferences] = useState(false);
+  const [statisticsHidden, setStatisticsHidden] = useState(() => {
+    try {
+      return localStorage.getItem("admin.statistics.hidden") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("admin.sidebar.collapsed") !== "true";
+    } catch {
+      return true;
+    }
+  });
+  const [sidebar, setSidebar] = useState(() => {
+    try {
+      return localStorage.getItem("admin.sidebar") !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const active = model.page === "admin" ? model.section : model.page;
+  useLayoutEffect(
+    () => animateAdminEntrance(document.querySelector(".rn-page")),
+    [active],
+  );
+  useLayoutEffect(() => {
+    const page = document.querySelector(".rn-page");
+    const open = (event) => dispatch("admin-user-open", event.detail);
+    page?.addEventListener("admin-row-open", open);
+    return () => page?.removeEventListener("admin-row-open", open);
+  }, [dispatch]);
+  const routes = model.groups.flatMap((g) => g[2]);
+  const desktopGroups = [
+    ["Пользователи", "Users", ["users", "administrators", "partners"], "users"],
+    ["Ноды", "Nodes", ["servers"], "server"],
+    [
+      "Подписка",
+      "Subscription",
+      ["subscriptions", "plans", "subpage", "trial", "grace"],
+      "grid",
+    ],
+    [
+      "Коммерция",
+      "Commerce",
+      [
+        "finance",
+        "analytics",
+        "promocodes",
+        "referrals",
+        "integrations",
+        "moynalog",
+      ],
+      "cartShopping",
+    ],
+    [
+      "Инструменты",
+      "Tools",
+      ["support", "reviews", "torrents", "abuses", "broadcast", "diagnostics", "ai"],
+      "grid",
+    ],
+    [
+      "Настройки",
+      "Settings",
+      [
+        "content",
+        "appearance",
+        "layout",
+        "localization",
+        "features",
+        "maintenance",
+        "push",
+        "status",
+      ],
+      "settings",
+    ],
+  ]
+    .map(([ru, en, ids, icon]) => [
+      ru,
+      en,
+      ids.map((id) => routes.find((r) => r[0] === id)).filter(Boolean),
+      icon,
+    ])
+    .filter((g) => g[2].length);
+  const route = model.groups.flatMap((g) => g[2]).find((r) => r[0] === active);
+  const title =
+    route?.[model.locale === "en" ? 2 : 1] ||
+    (model.locale === "en" ? "Statistics" : "Статистика");
+  const navRoute = (r) => (
+    <NavLink
+      key={r[0]}
+      component="button"
+      type="button"
+      label={r[model.locale === "en" ? 2 : 1]}
+      aria-label={r[model.locale === "en" ? 2 : 1]}
+      title={!sidebarOpen ? r[model.locale === "en" ? 2 : 1] : undefined}
+      variant="subtle"
+      leftSection={glyph(r[3])}
+      active={r[0] === active}
+      aria-current={r[0] === active ? "page" : undefined}
+      onClick={() => setMobile(false)}
+      {...actionProps(
+        r[5] === "page" ? "admin-console-page" : "open-admin-section",
+        r[0],
+      )}
+    />
+  );
+  const navigation = (
+    <>
+      <Text className="rn-section-label rn-section-label--overview">
+        {model.locale === "en" ? "Overview" : "Обзор"}
+      </Text>
+      <NavLink
+        component="button"
+        type="button"
+        label={model.locale === "en" ? "Overview" : "Обзор"}
+        aria-label={model.locale === "en" ? "Overview" : "Обзор"}
+        title={!sidebarOpen ? "Обзор" : undefined}
+        variant="subtle"
+        leftSection={<PiStar size={18} />}
+        active={active === "home"}
+        aria-current={active === "home" ? "page" : undefined}
+        {...actionProps("open-admin-section", "home")}
+        onClick={() => setMobile(false)}
+      />
+      {model.groups.map((g) => (
+        <div key={g[0]}>
+          <Text className="rn-section-label">
+            {g[model.locale === "en" ? 1 : 0]}
+          </Text>
+          {g[2].map(navRoute)}
+          <Divider my="sm" variant="dashed" opacity={0.3} />
+        </div>
+      ))}
+    </>
+  );
+  return (
+    <MantineProvider
+      theme={theme}
+      forceColorScheme="dark"
+      cssVariablesSelector='html[data-admin-console="on"]'
+    >
+      <div
+        className={`app-shell rw-shell remna-admin ${sidebar ? "rn-sidebar-layout rn-sidebar-mode" : ""} ${sidebar && !sidebarOpen ? "rn-sidebar-collapsed" : ""}`}
+        data-statistics-hidden={statisticsHidden}
+      >
+        <header className="rn-header">
+          <div className="rn-brand-row">
+            <Group gap="sm" className="rn-header-brand">
+              <ActionIcon
+                className="rn-mobile-toggle"
+                aria-label="Открыть меню"
+                onClick={() => setMobile(true)}
+              >
+                <PiList size={22} />
+              </ActionIcon>
+              {model.logo ? (
+                <img className="rn-brand-logo" src={model.logo} alt="" />
+              ) : (
+                <PiShieldCheck size={22} />
+              )}
+              <Text className="rn-brand" fw={700}>
+                {model.brand}
+              </Text>
+            </Group>
+            {sidebar && (
+              <ActionIcon
+                className="rn-desktop-toggle"
+                aria-label={
+                  sidebarOpen
+                    ? "Свернуть боковое меню"
+                    : "Развернуть боковое меню"
+                }
+                aria-expanded={sidebarOpen}
+                aria-controls="admin-sidebar"
+                onClick={() => {
+                  const next = !sidebarOpen;
+                  setSidebarOpen(next);
+                  try {
+                    localStorage.setItem(
+                      "admin.sidebar.collapsed",
+                      String(!next),
+                    );
+                  } catch {}
+                }}
+              >
+                <PiCaretLeft size={20} />
+              </ActionIcon>
+            )}
+            <Group gap="xs">
+              {
+                <Tooltip
+                  label={statisticsHidden ? "Показать данные" : "Скрыть данные"}
+                >
+                  <ActionIcon
+                    className="rn-header-control rn-statistics-privacy-toggle"
+                    aria-label={
+                      statisticsHidden ? "Показать данные" : "Скрыть данные"
+                    }
+                    aria-pressed={statisticsHidden}
+                    onClick={() => {
+                      const next = !statisticsHidden;
+                      setStatisticsHidden(next);
+                      try {
+                        localStorage.setItem(
+                          "admin.statistics.hidden",
+                          String(next),
+                        );
+                      } catch {}
+                    }}
+                  >
+                    {statisticsHidden ? (
+                      <PiEyeSlash size={22} />
+                    ) : (
+                      <PiEye size={22} />
+                    )}
+                  </ActionIcon>
+                </Tooltip>
+              }
+              <Tooltip label="Документация Remnawave">
+                <ActionIcon
+                  component="a"
+                  href="https://docs.rw/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rn-header-control rn-header-secondary"
+                  aria-label="Документация Remnawave"
+                >
+                  <TbBook size={22} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Статус системы">
+                <ActionIcon
+                  className="rn-header-control rn-header-secondary"
+                  aria-label="Статус системы"
+                  {...actionProps("open-admin-section", "status")}
+                >
+                  <TbChartBar size={22} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Репозиторий Link-Bot">
+                <ActionIcon
+                  component="a"
+                  href="https://github.com/bruhxax/Link-Bot"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rn-header-control rn-header-secondary"
+                  aria-label="Репозиторий Link-Bot"
+                >
+                  <TbBrandGithub size={22} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Настройки интерфейса">
+                <ActionIcon
+                  className="rn-header-control"
+                  onClick={() => setPreferences(true)}
+                  aria-label="Настройки интерфейса"
+                >
+                  <PiSlidersHorizontal size={22} />
+                </ActionIcon>
+              </Tooltip>
+              <Menu position="bottom-end">
+                <Menu.Target>
+                  <ActionIcon
+                    className="rn-header-control"
+                    aria-label="Язык интерфейса"
+                  >
+                    <TbLanguage size={22} />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item {...actionProps("profile-language", "ru")}>
+                    Русский
+                  </Menu.Item>
+                  <Menu.Item {...actionProps("profile-language", "en")}>
+                    English
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+              <IconAction
+                action="admin-console-exit"
+                label="Личный кабинет"
+                className="rn-header-control"
+              >
+                <PiArrowSquareOut size={22} />
+              </IconAction>
+              {model.logout && (
+                <IconAction
+                  action="browser-logout"
+                  label="Выйти"
+                  className="rn-header-control"
+                >
+                  <PiSignOut size={22} />
+                </IconAction>
+              )}
+            </Group>
+          </div>
+          {!sidebar && (
+            <nav className="rn-nav">
+              <button
+                className={`rn-nav-item ${active === "home" ? "is-active" : ""}`}
+                {...actionProps("open-admin-section", "home")}
+              >
+                <PiStar size={18} />
+                Главная
+              </button>
+              {desktopGroups.map((g, i) => (
+                <Menu
+                  key={g[0]}
+                  trigger="click"
+                  position="bottom-start"
+                  transitionProps={{ transition: "fade", duration: 180 }}
+                >
+                  <Menu.Target>
+                    <button
+                      className={`rn-nav-item ${g[2].some((r) => r[0] === active) ? "is-active" : ""}`}
+                    >
+                      {glyph(g[3])}
+                      {g[model.locale === "en" ? 1 : 0]}
+                      <PiCaretDown size={12} />
+                    </button>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    {g[2].map((r) => (
+                      <Menu.Item
+                        key={r[0]}
+                        leftSection={glyph(r[3])}
+                        {...actionProps(
+                          r[5] === "page"
+                            ? "admin-console-page"
+                            : "open-admin-section",
+                          r[0],
+                        )}
+                      >
+                        {r[model.locale === "en" ? 2 : 1]}
+                      </Menu.Item>
+                    ))}
+                  </Menu.Dropdown>
+                </Menu>
+              ))}
+            </nav>
+          )}
+        </header>
+        {sidebar && (
+          <aside className="rn-sidebar" id="admin-sidebar">
+            <div className="rn-sidebar-brand">
+              {model.logo ? (
+                <img className="rn-brand-logo" src={model.logo} alt="" />
+              ) : (
+                <PiShieldCheck size={24} />
+              )}
+              <Text className="rn-brand" fw={700}>
+                {model.brand}
+              </Text>
+            </div>
+            <nav
+              className="rn-sidebar-scroll"
+              aria-label="Навигация администратора"
+            >
+              {navigation}
+            </nav>
+            <div className="rn-sidebar-footer">
+              <button {...actionProps("admin-console-exit")}>
+                <PiArrowSquareOut size={18} />
+                <span>Личный кабинет</span>
+              </button>
+            </div>
+          </aside>
+        )}
+        <main className="page-scroll rn-main" aria-label={title}>
+          <div className="rn-page" data-section={active}>
+            {active === "servers" && <NodeMetrics model={model} />}
+            <Card className="rn-page-header" mb="sm" p="sm">
+              <Group justify="space-between" wrap="wrap">
+                <Group>
+                  <ThemeIcon size={30} variant="soft" radius="sm">
+                    {active === "home" ? (
+                      <PiStar size={18} />
+                    ) : active === "promocodes" ? (
+                      <PiPercent size={26} />
+                    ) : (
+                      glyph(route?.[3])
+                    )}
+                  </ThemeIcon>
+                  <Title order={4} tabIndex={-1}>
+                    {title}
+                  </Title>
+                </Group>
+                <Group gap="xs">
+                  {model.save && (
+                    <Group className="rn-settings-actions" gap="xs">
+                      <span role="status" className="rn-save-status">
+                        {model.dirty ? "Есть несохранённые изменения" : ""}
+                      </span>
+                      <Action
+                        action="admin-cancel-settings"
+                        disabled={!model.dirty || model.busy}
+                      >
+                        Отменить
+                      </Action>
+                      <Action
+                        action="admin-save-settings"
+                        color="teal"
+                        disabled={!model.dirty || model.busy}
+                        leftSection={<PiCheck />}
+                      >
+                        Сохранить
+                      </Action>
+                    </Group>
+                  )}
+                  {active !== "home" &&
+                    active !== "users" &&
+                    active !== "partners" &&
+                    active !== "abuses" && (
+                      <IconAction action="refresh" label="Обновить">
+                        <PiArrowsClockwise size={20} />
+                      </IconAction>
+                    )}
+                  {active === "plans" && (
+                    <IconAction
+                      action="admin-add-plan"
+                      label="Добавить тариф"
+                      color="teal"
+                    >
+                      <PiPlus size={22} />
+                    </IconAction>
+                  )}
+                </Group>
+              </Group>
+            </Card>
+            {active === "home" && (
+              <SectionToolbar model={model} active={active} />
+            )}
+            {active === "home" ? (
+              <Overview model={model} hidden={statisticsHidden} />
+            ) : active === "plans" ? (
+              <Plans model={model} />
+            ) : active === "layout" ? (
+              <Layout model={model} />
+            ) : active === "users" ? (
+              <Users
+                model={model}
+                DataTable={DataTable}
+                hidden={statisticsHidden}
+                Metrics={UserMetrics}
+              />
+            ) : active === "partners" ? (
+              <Partners model={model} hidden={statisticsHidden} />
+            ) : active === "broadcast" ? (
+              <Broadcast
+                model={model}
+                dispatch={dispatch}
+                hidden={statisticsHidden}
+                Legacy={Legacy}
+              />
+            ) : active === "promocodes" ? (
+              <Promocodes model={model} hidden={statisticsHidden} />
+            ) : active === "servers" ? (
+              <Nodes model={model} />
+            ) : active === "reviews" ? (
+              <Reviews model={model} />
+            ) : (
+              <div className="rn-content" data-section={active}>
+                <Legacy node={content} />
+              </div>
+            )}
+          </div>
+        </main>
+        {active === "users" && model.userDetail && (
+          <UserDialog
+            model={model}
+            content={content}
+            dispatch={dispatch}
+            Legacy={Legacy}
+          />
+        )}
+        <Dialogs nodes={dialogs} dispatch={dispatch} />
+        <Drawer
+          opened={mobile}
+          onClose={() => setMobile(false)}
+          withinPortal
+          portalProps={{ target: "#app" }}
+          title={model.brand}
+          size={300}
+          className="rn-mobile-nav"
+          closeButtonProps={{ "aria-label": "Закрыть меню" }}
+        >
+          {navigation}
+        </Drawer>
+        <Modal
+          opened={preferences}
+          onClose={() => setPreferences(false)}
+          title="Настройки интерфейса"
+          size="md"
+        >
+          <Stack>
+            <Text size="sm" c="dimmed">
+              Настройки сохраняются в этом браузере.
+            </Text>
+            <Switch
+              label="Боковое меню"
+              aria-label="Боковое меню"
+              description="Альтернативное расположение навигации"
+              checked={sidebar}
+              onChange={(e) => {
+                setSidebar(e.currentTarget.checked);
+                try {
+                  localStorage.setItem(
+                    "admin.sidebar",
+                    String(e.currentTarget.checked),
+                  );
+                } catch {
+                  /* Keep the session preference. */
+                }
+              }}
+            />
+            <Text size="sm">
+              Плотность, порядок и видимость столбцов настраиваются в панели
+              каждой таблицы.
+            </Text>
+            <Divider />
+            <Text size="xs" c="dimmed">
+              Интерфейс основан на Remnawave frontend · AGPL-3.0
+            </Text>
+            <Button
+              component="a"
+              href="/mini-app/admin-ui-source.zip"
+              variant="subtle"
+              download
+            >
+              Исходники интерфейса и лицензии
+            </Button>
+          </Stack>
+        </Modal>
+      </div>
+    </MantineProvider>
+  );
+}
+export function mountRemnaAdmin(element, model, shell) {
+  const content =
+    shell.querySelector(".page-scroll > .page") ||
+    shell.querySelector(".page-scroll");
+  const dialogs = [...shell.children].filter((n) =>
+    n.matches(".modal,.admin-commerce-menu"),
+  );
+  // Broadcast confirmations are nested in their legacy page. Lift them into
+  // the shared dialog layer before native content replaces that page.
+  for (const confirmation of shell.querySelectorAll(
+    ".page-scroll .admin-broadcast-confirm",
+  )) {
+    const modal = confirmation.closest(".modal");
+    if (modal && !dialogs.includes(modal)) {
+      dialogs.push(modal);
+      modal.remove();
+    }
+  }
+  // The bridge recreates model objects and markup on every refresh. Its action
+  // callbacks use the live cabinet state, so only serialized view data needs
+  // to invalidate an unchanged render. React's own menu/form state stays live.
+  const signature =
+    JSON.stringify(model) +
+    (content?.outerHTML || "") +
+    dialogs.map((node) => node.outerHTML).join("");
+  if (
+    mountedRoot &&
+    mountedElement === element &&
+    mountedSignature === signature
+  )
+    return;
+  const dispatch = (action, value) => {
+    const button = document.createElement("button");
+    button.dataset.action = action;
+    if (value != null) button.dataset.value = value;
+    element.append(button);
+    button.click();
+    button.remove();
+  };
+  if (!mountedRoot || mountedElement !== element) {
+    if (mountedRoot) flushSync(() => mountedRoot.unmount());
+    mountedRoot = createRoot(element);
+    mountedElement = element;
+  }
+  mountedSignature = signature;
+  flushSync(() =>
+    mountedRoot.render(
+      <Admin
+        model={model}
+        content={content}
+        dialogs={dialogs}
+        dispatch={dispatch}
+      />,
+    ),
+  );
+}
+export function unmountRemnaAdmin() {
+  if (mountedRoot) {
+    flushSync(() => mountedRoot.unmount());
+    mountedRoot = null;
+    mountedElement = null;
+    mountedSignature = null;
+  }
+}

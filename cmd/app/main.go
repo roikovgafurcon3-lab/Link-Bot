@@ -1,0 +1,814 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"time"
+
+	"link-bot/internal/appupdate"
+	"link-bot/internal/broadcast"
+	"link-bot/internal/cache"
+	"link-bot/internal/config"
+	"link-bot/internal/cryptopay"
+	"link-bot/internal/database"
+	"link-bot/internal/devicequota"
+	"link-bot/internal/handler"
+	"link-bot/internal/integrations"
+	"link-bot/internal/miniapp"
+	"link-bot/internal/notification"
+	"link-bot/internal/operations"
+	"link-bot/internal/payment"
+	"link-bot/internal/remnawave"
+	"link-bot/internal/runtimeconfig"
+	"link-bot/internal/sync"
+	"link-bot/internal/translation"
+	"link-bot/internal/tribute"
+	"link-bot/internal/webauth"
+	"link-bot/internal/webpush"
+	"link-bot/internal/yookasa"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/robfig/cron/v3"
+)
+
+var (
+	Version   = "dev"
+	Commit    = "none"
+	BuildDate = "unknown"
+)
+
+func main() {
+	startedAt := time.Now()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	config.InitConfig()
+	slog.Info("Application starting", "version", Version, "commit", Commit, "buildDate", BuildDate)
+
+	tm := translation.GetInstance()
+	err := tm.InitTranslations("./translations", config.DefaultLanguage())
+	if err != nil {
+		panic(err)
+	}
+
+	pool, err := initDatabase(ctx, config.DadaBaseUrl())
+	if err != nil {
+		panic(err)
+	}
+
+	err = database.RunMigrations(ctx, &database.MigrationConfig{Direction: "up", MigrationsPath: "./db/migrations", Steps: 0}, pool)
+	if err != nil {
+		panic(err)
+	}
+	cache := cache.NewCache(30 * time.Minute)
+	customerRepository := database.NewCustomerRepository(pool)
+	purchaseRepository := database.NewPurchaseRepository(pool)
+	subscriptionRepository := database.NewSubscriptionRepository(pool)
+	promoCodeRepository := database.NewPromoCodeRepository(pool)
+	referralRepository := database.NewReferralRepository(pool)
+	partnerRepository := database.NewPartnerRepository(pool)
+	walletRepository := database.NewWalletRepository(pool)
+	supportRepository := database.NewSupportRepository(pool)
+	reviewRepository := database.NewReviewRepository(pool)
+	runtimeSettingsRepository := database.NewRuntimeSettingsRepository(pool)
+	releaseNotificationRepository := database.NewReleaseNotificationRepository(pool)
+	broadcastRepository := database.NewBroadcastRepository(pool)
+	paymentIntegrationRepository := database.NewPaymentIntegrationRepository(pool)
+	moynalogReceiptRepository := database.NewMoyNalogReceiptRepository(pool)
+	webPushRepository := database.NewWebPushRepository(pool)
+	if err := moynalogReceiptRepository.RecoverInterrupted(ctx); err != nil {
+		slog.Warn("moynalog receipt recovery failed", "error", err)
+	}
+	runtimeSettings, err := runtimeconfig.NewService(ctx, runtimeSettingsRepository)
+	if err != nil {
+		panic(err)
+	}
+	tm.SetActiveLanguage(runtimeSettings.Language())
+	integrationSettings, err := integrations.NewService(ctx, paymentIntegrationRepository)
+	if err != nil {
+		panic(err)
+	}
+	webPushService, err := webpush.NewService(ctx, webPushRepository, config.GetAdminTelegramId(), config.GetMiniAppURL())
+	if err != nil {
+		slog.Error("admin web push disabled", "error", err)
+		webPushService = nil
+	}
+
+	cryptoPayClient := cryptopay.NewCryptoPayClient(config.CryptoPayUrl(), config.CryptoPayToken())
+	remnawaveClient := remnawave.NewClient(config.RemnawaveUrl(), config.RemnawaveToken(), config.RemnawaveMode())
+	quotaURL := config.GetMiniAppURL()
+	if config.CabinetBaseURL() != "" {
+		quotaURL = config.CabinetBaseURL()
+	}
+	deviceQuotas := devicequota.New(devicequota.NewPostgresStore(pool), remnawaveClient, runtimeSettings, quotaURL)
+	remnawaveClient.SetDeviceQuotaBridge(deviceQuotas)
+	go deviceQuotas.Run(ctx)
+	yookasaClient := yookasa.NewClient(config.YookasaUrl(), config.YookasaShopId(), config.YookasaSecretKey())
+	telegramHTTPClient, err := newTelegramProxyClient(config.TelegramProxyURL())
+	if err != nil {
+		panic(err)
+	}
+	telegramOptions := []bot.Option{
+		bot.WithWorkers(3),
+		bot.WithAllowedUpdates(bot.AllowedUpdates{
+			models.AllowedUpdateMessage,
+			models.AllowedUpdateCallbackQuery,
+			models.AllowedUpdatePreCheckoutQuery,
+			models.AllowedUpdateInlineQuery,
+			models.AllowedUpdateChosenInlineResult,
+		}),
+		bot.WithMiddlewares(handler.UserActivityMiddleware(customerRepository)),
+	}
+	if telegramHTTPClient != nil {
+		telegramOptions = append(telegramOptions, bot.WithHTTPClient(time.Minute, telegramHTTPClient))
+	}
+	b, err := bot.New(config.TelegramToken(), telegramOptions...)
+	if err != nil {
+		panic(err)
+	}
+	if err := runtimeSettings.SetTelegramBot(ctx, b); err != nil {
+		slog.Warn("premium emoji normalization failed", "error", err)
+	}
+	errorReporter := operations.NewReporter(runtimeSettingsRepository, b, config.GetAdminTelegramId())
+	errorReporter.SetAdminPushNotifier(webPushService)
+	broadcastService := broadcast.NewService(broadcastRepository, customerRepository, promoCodeRepository, b)
+	broadcastService.ConfigurePinnedMessages(database.NewPinnedMessageRepository(pool))
+	go broadcastService.RunPinnedMessages(ctx)
+	go broadcastService.RunMessageDeletions(ctx)
+	if err := broadcastService.RecoverInterrupted(ctx); err != nil {
+		slog.Warn("broadcast recovery failed", "error", err)
+	}
+
+	paymentService := payment.NewPaymentService(tm, purchaseRepository, promoCodeRepository, remnawaveClient, customerRepository, b, cryptoPayClient, yookasaClient, referralRepository, partnerRepository, walletRepository, cache, moynalogReceiptRepository, runtimeSettings, errorReporter, integrationSettings, subscriptionRepository)
+	paymentService.SetTelegramHTTPClient(telegramHTTPClient)
+	paymentService.SetAdminPushNotifier(webPushService)
+	go paymentService.RunInlineGiftPublisher(ctx)
+
+	cronScheduler := setupInvoiceChecker(customerRepository, purchaseRepository, paymentService)
+	if cronScheduler != nil {
+		cronScheduler.Start()
+		defer cronScheduler.Stop()
+	}
+
+	subService := notification.NewSubscriptionService(customerRepository, purchaseRepository, paymentService, b, tm, runtimeSettings, remnawaveClient)
+	go notification.NewNodeMonitor(remnawaveClient, database.NewNodeOutageRepository(pool), runtimeSettings, b, config.GetAdminTelegramId()).Run(ctx)
+	syncService := sync.NewSyncService(remnawaveClient, customerRepository)
+
+	subscriptionNotificationCronScheduler := subscriptionChecker(syncService, subService)
+	subscriptionNotificationCronScheduler.Start()
+	defer subscriptionNotificationCronScheduler.Stop()
+	deviceAccessScheduler := cron.New(cron.WithSeconds(), cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
+	checkDeviceAccess := func() {
+		checkCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
+		defer cancel()
+		if err := paymentService.ProcessDeviceExpirations(checkCtx); err != nil {
+			slog.Error("device expiry check failed", "error", err)
+		}
+	}
+	if _, err := deviceAccessScheduler.AddFunc("0 * * * * *", checkDeviceAccess); err != nil {
+		panic(err)
+	}
+	deviceAccessScheduler.Start()
+	defer deviceAccessScheduler.Stop()
+	go checkDeviceAccess()
+	go runSubscriptionCheck(syncService, subService)
+
+	webLogin := webauth.NewService(webauth.DefaultTTL)
+	h := handler.NewHandler(syncService, paymentService, tm, customerRepository, purchaseRepository, cryptoPayClient, yookasaClient, referralRepository, cache, runtimeSettings, errorReporter, webLogin)
+	h.SetStartMenuDataSources(subscriptionRepository, remnawaveClient)
+	h.SetPinnedMessageOnStart(broadcastService.EnsurePinnedOnStart)
+	miniAppHandler := miniapp.NewHandler(customerRepository, purchaseRepository, promoCodeRepository, referralRepository, partnerRepository, walletRepository, supportRepository, reviewRepository, paymentService, remnawaveClient, b, broadcastService, subService, runtimeSettings, errorReporter, integrationSettings, subscriptionRepository, tm, webLogin)
+	h.SetInlineAdminService(miniAppHandler)
+	miniAppHandler.SetThemePresetRepository(database.NewThemePresetRepository(pool))
+	miniAppHandler.SetStatusInfo(Version, Commit, BuildDate, startedAt, pool)
+	miniAppHandler.SetWebPushService(webPushService)
+	miniAppHandler.StartRealtime(ctx, config.DadaBaseUrl())
+	miniAppHandler.StartSupportAutoCloser(ctx)
+	miniAppHandler.StartSupportAI(ctx)
+	miniAppHandler.StartSubscriptionReissueCleaner(ctx)
+	go miniAppHandler.RunWithdrawalNotifier(ctx)
+	operations.StartHealthMonitor(ctx, pool, remnawaveClient, errorReporter)
+
+	me, err := b.GetMe(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	if config.GetMiniAppURL() != "" {
+		_, err = b.SetChatMenuButton(ctx, &bot.SetChatMenuButtonParams{
+			MenuButton: &models.MenuButtonWebApp{
+				Type: models.MenuButtonTypeWebApp,
+				Text: tm.GetText(config.DefaultLanguage(), "web_app_button_text"),
+				WebApp: models.WebAppInfo{
+					URL: config.GetMiniAppURL(),
+				},
+			},
+		})
+	} else {
+		_, err = b.SetChatMenuButton(ctx, &bot.SetChatMenuButtonParams{
+			MenuButton: &models.MenuButtonCommands{
+				Type: models.MenuButtonTypeCommands,
+			},
+		})
+	}
+
+	startDescription, connectDescription := translation.CommandDescriptions(tm.ActiveLanguage())
+	localizedCommands := []models.BotCommand{
+		{Command: "start", Description: startDescription},
+		{Command: "connect", Description: connectDescription},
+	}
+	for _, languageCode := range []string{"", "ru", "en", "fa"} {
+		_, err = b.SetMyCommands(ctx, &bot.SetMyCommandsParams{Commands: localizedCommands, LanguageCode: languageCode})
+		if err != nil {
+			slog.Warn("set localized bot commands failed", "languageCode", languageCode, "error", err)
+		}
+	}
+
+	config.SetBotURL(fmt.Sprintf("https://t.me/%s", me.Username))
+	startPaymentNotificationBot(ctx, integrationSettings, paymentService, telegramHTTPClient)
+	notifyAdminAfterUpdate(ctx, b, releaseNotificationRepository)
+	go appupdate.RunNotifications(ctx, b, config.GetAdminTelegramId(), database.NewUpdateNotificationRepository(pool), Version, Commit)
+
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypePrefix, h.StartCommandHandler, h.SuspiciousUserFilterMiddleware)
+	b.RegisterHandlerMatchFunc(func(update *models.Update) bool { return update.InlineQuery != nil }, h.InlineGiftQueryHandler)
+	b.RegisterHandlerMatchFunc(func(update *models.Update) bool { return update.ChosenInlineResult != nil }, h.InlineGiftChosenHandler)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "ig:pay:", bot.MatchTypePrefix, h.InlineGiftPayHandler)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "sm:", bot.MatchTypePrefix, h.StartSubmenuCallbackHandler)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "ia:", bot.MatchTypePrefix, h.InlineAdminActionHandler)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "wd:", bot.MatchTypePrefix, miniAppHandler.HandleWithdrawalCallback)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/connect", bot.MatchTypeExact, h.ConnectCommandHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/sync", bot.MatchTypeExact, h.SyncUsersCommandHandler, isAdminMiddleware)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/getfileid", bot.MatchTypePrefix, h.GetFileIDCommandHandler, isAdminMiddleware)
+	// Users can manage mailing preferences even while channel/maintenance gates are active.
+	for _, callback := range []string{handler.CallbackNotifications, handler.CallbackBroadcastSubscribe, handler.CallbackBroadcastUnsubscribe} {
+		b.RegisterHandler(bot.HandlerTypeCallbackQueryData, callback, bot.MatchTypeExact, h.NotificationsCallbackHandler)
+	}
+
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackCancelStarsUI, bot.MatchTypePrefix, h.CancelStarsUIHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackVerifyChannel, bot.MatchTypeExact, h.VerifyChannelSubscriptionCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackReferral, bot.MatchTypeExact, h.ReferralCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackBuy, bot.MatchTypeExact, h.BuyCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackTrial, bot.MatchTypeExact, h.TrialCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackActivateTrial, bot.MatchTypeExact, h.ActivateTrialCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackStart, bot.MatchTypeExact, h.StartCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackSell, bot.MatchTypePrefix, h.SellCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackConnect, bot.MatchTypeExact, h.ConnectCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.CallbackPayment, bot.MatchTypePrefix, h.PaymentCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+	b.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		if update.Message == nil {
+			return false
+		}
+
+		t := strings.TrimSpace(update.Message.Text)
+		c := strings.TrimSpace(update.Message.Caption)
+
+		// ловим /allcom и в тексте, и в подписи к медиа
+		return (t != "" && (strings.HasPrefix(t, "/allcom") || strings.HasPrefix(t, "/allcom@"))) ||
+			(c != "" && (strings.HasPrefix(c, "/allcom") || strings.HasPrefix(c, "/allcom@")))
+	}, h.AllcomCommandHandler, isAdminMiddleware)
+
+	b.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		if update.Message == nil || update.Message.From == nil || update.Message.Chat.ID != update.Message.From.ID || update.Message.SuccessfulPayment != nil {
+			return false
+		}
+		accessCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return miniAppHandler.HasAdminPermission(accessCtx, update.Message.From.ID, "users.message", "broadcast", "content")
+	}, func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		if miniAppHandler.HasAdminPermission(ctx, update.Message.From.ID, "content") {
+			captured, err := broadcastService.CapturePinnedMessage(ctx, update.Message)
+			if err != nil {
+				slog.Error("pinned message capture failed", "error", err)
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: "Не удалось сохранить закреплённое сообщение. Попробуйте ещё раз."})
+				return
+			}
+			if captured {
+				return
+			}
+		}
+		var directCaptured bool
+		var directErr error
+		if miniAppHandler.HasAdminPermission(ctx, update.Message.From.ID, "users.message") {
+			directCaptured, directErr = broadcastService.CaptureDirectMessage(ctx, update.Message)
+		}
+		if directErr != nil {
+			slog.Error("direct message capture failed", "error", directErr)
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: "Не удалось сохранить личное сообщение. Попробуйте ещё раз."})
+			return
+		}
+		if directCaptured {
+			return
+		}
+		if !miniAppHandler.HasAdminPermission(ctx, update.Message.From.ID, "broadcast") {
+			return
+		}
+		captured, err := broadcastService.CaptureMessage(ctx, update.Message)
+		if err != nil {
+			slog.Error("broadcast message capture failed", "error", err)
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: "Не удалось сохранить сообщение для рассылки. Попробуйте ещё раз."})
+			return
+		}
+		if captured {
+			slog.Info("broadcast source message captured", "messageId", update.Message.ID)
+		}
+	})
+
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "sv:", bot.MatchTypePrefix, broadcastService.HandleSurvey)
+	b.RegisterHandlerMatchFunc(broadcast.IsAutoReplyCandidate, broadcastService.HandleAutoReply)
+
+	b.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		return update.PreCheckoutQuery != nil
+	}, h.PreCheckoutCallbackHandler, h.SuspiciousUserFilterMiddleware, h.CreateCustomerIfNotExistMiddleware)
+
+	b.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		return update.Message != nil && update.Message.SuccessfulPayment != nil
+	}, h.SuccessPaymentHandler, h.SuspiciousUserFilterMiddleware)
+
+	mux := http.NewServeMux()
+	mux.Handle(devicequota.Route, deviceQuotas)
+	mux.Handle("/healthcheck", fullHealthHandler(pool, remnawaveClient))
+	miniAppHandler.Register(mux)
+	if config.GetTributeWebHookUrl() != "" {
+		tributeHandler := tribute.NewClient(paymentService, customerRepository)
+		mux.Handle(config.GetTributeWebHookUrl(), tributeHandler.WebHookHandler())
+	}
+
+	srv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", config.GetHealthCheckPort()),
+		Handler: mux,
+	}
+	go func() {
+		log.Printf("Server listening on %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	slog.Info("Bot is starting...")
+	b.Start(ctx)
+
+	log.Println("Shutting down health server…")
+	shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Health server shutdown error: %v", err)
+	}
+}
+
+func notifyAdminAfterUpdate(ctx context.Context, b *bot.Bot, repository *database.ReleaseNotificationRepository) {
+	revision := releaseRevision()
+	lastRevision, found, err := repository.LastNotifiedRevision(ctx)
+	if err != nil {
+		slog.Warn("release notification state lookup failed", "error", err)
+		return
+	}
+	if found && lastRevision == revision {
+		return
+	}
+
+	notificationCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if _, err := b.SendMessage(notificationCtx, &bot.SendMessageParams{
+		ChatID: config.GetAdminTelegramId(),
+		Text:   fmt.Sprintf("✅ Link-Bot обновлён\nВерсия: %s\nКоммит: %s", Version, Commit),
+	}); err != nil {
+		slog.Warn("release notification delivery failed", "error", err)
+		return
+	}
+
+	saveCtx, saveCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer saveCancel()
+	if err := repository.MarkNotified(saveCtx, revision); err != nil {
+		slog.Warn("release notification state save failed", "error", err)
+	}
+}
+
+func releaseRevision() string {
+	return strings.Join([]string{
+		strings.TrimSpace(Version),
+		strings.TrimSpace(Commit),
+		strings.TrimSpace(BuildDate),
+	}, "|")
+}
+
+func fullHealthHandler(pool *pgxpool.Pool, rw *remnawave.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		status := map[string]string{
+			"status":    "ok",
+			"db":        "ok",
+			"rw":        "ok",
+			"time":      time.Now().Format(time.RFC3339),
+			"version":   Version,
+			"commit":    Commit,
+			"buildDate": BuildDate,
+		}
+
+		dbCtx, dbCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer dbCancel()
+		if err := pool.Ping(dbCtx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			status["status"] = "fail"
+			status["db"] = "error: " + err.Error()
+		}
+
+		rwCtx, rwCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer rwCancel()
+		if err := rw.Ping(rwCtx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			status["status"] = "fail"
+			status["rw"] = "error: " + err.Error()
+		}
+
+		if status["status"] == "ok" {
+			w.WriteHeader(http.StatusOK)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"%s","db":"%s","remnawave":"%s","time":"%s","version":"%s","commit":"%s","buildDate":"%s"}`,
+			status["status"], status["db"], status["rw"], status["time"], Version, Commit, BuildDate)
+	})
+}
+
+func isAdminMiddleware(next bot.HandlerFunc) bot.HandlerFunc {
+	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		if update.Message != nil && update.Message.From.ID == config.GetAdminTelegramId() {
+			next(ctx, b, update)
+		} else {
+			return
+		}
+	}
+}
+
+func startPaymentNotificationBot(ctx context.Context, settings *integrations.Service, paymentService *payment.PaymentService, telegramHTTPClient *http.Client) {
+	if settings == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		var runningConfigKey string
+		var stop context.CancelFunc
+		var stopped <-chan struct{}
+		defer func() {
+			if stop != nil {
+				stop()
+				<-stopped
+			}
+		}()
+		for {
+			// A token can be saved or replaced while the main application is running.
+			cfg, _ := settings.StoredConfig(integrations.ProviderNotificationBot)
+			token := strings.TrimSpace(cfg["token"])
+			configKey := ""
+			if token != "" {
+				configKey = token + "\x00" + strings.TrimSpace(cfg["chatId"]) + "\x00" + strings.TrimSpace(cfg["timezone"])
+			}
+			if configKey != runningConfigKey {
+				if stop != nil {
+					stop()
+					<-stopped
+					stop = nil
+					stopped = nil
+				}
+				runningConfigKey = ""
+				if token != "" {
+					botCtx, cancel := context.WithCancel(ctx)
+					if done, ok := runPaymentNotificationBot(botCtx, settings, paymentService, cfg, telegramHTTPClient); ok {
+						runningConfigKey, stop, stopped = configKey, cancel, done
+					} else {
+						cancel()
+					}
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopped:
+				runningConfigKey, stop, stopped = "", nil, nil
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+func runPaymentNotificationBot(ctx context.Context, settings *integrations.Service, paymentService *payment.PaymentService, notificationConfig map[string]string, telegramHTTPClient *http.Client) (<-chan struct{}, bool) {
+	// Keep the bot responsive to setup commands even when payment delivery is disabled.
+	token := strings.TrimSpace(notificationConfig["token"])
+	if token == "" {
+		return nil, false
+	}
+	allowedChatID, _ := strconv.ParseInt(strings.TrimSpace(notificationConfig["chatId"]), 10, 64)
+	if allowedChatID == 0 {
+		allowedChatID = config.GetAdminTelegramId()
+	}
+	timezone := strings.TrimSpace(notificationConfig["timezone"])
+	if timezone == "" {
+		timezone = "Europe/Moscow"
+	}
+
+	manager := &paymentNotificationGroupManager{settings: settings, adminID: config.GetAdminTelegramId(), chatID: allowedChatID}
+	notificationOptions := []bot.Option{bot.WithWorkers(1), bot.WithSkipGetMe(),
+		bot.WithDefaultHandler(manager.handle),
+		bot.WithAllowedUpdates(bot.AllowedUpdates{models.AllowedUpdateMessage, models.AllowedUpdateCallbackQuery, models.AllowedUpdateMyChatMember}),
+	}
+	if telegramHTTPClient != nil {
+		notificationOptions = append(notificationOptions, bot.WithHTTPClient(time.Minute, telegramHTTPClient))
+	}
+	notificationBot, err := bot.New(token, notificationOptions...)
+	if err != nil {
+		slog.Error("payment notification bot initialization failed", "error", err)
+		return nil, false
+	}
+
+	me, err := notificationBot.GetMe(ctx)
+	if err != nil {
+		slog.Warn("payment notification bot identity lookup failed; setup commands remain available", "error", err)
+	} else {
+		manager.username = me.Username
+	}
+	_, err = notificationBot.DeleteWebhook(ctx, &bot.DeleteWebhookParams{DropPendingUpdates: false})
+	if err != nil {
+		slog.Warn("payment notification bot webhook cleanup failed", "error", err)
+	}
+
+	commands := []models.BotCommand{
+		{Command: "start", Description: "Настроить уведомления"},
+		{Command: "groups", Description: "Группы для уведомлений"},
+		{Command: "topic", Description: "Указать топик для группы"},
+		{Command: "connectgroup", Description: "Подключить текущую группу"},
+		{Command: "remove", Description: "Отключить группу"},
+		{Command: "ping", Description: "Проверить уведомления"},
+	}
+	if _, err = notificationBot.SetMyCommands(ctx, &bot.SetMyCommandsParams{Commands: commands}); err != nil {
+		slog.Warn("payment notification bot default command setup failed", "error", err)
+	}
+	if _, err = notificationBot.SetMyCommands(ctx, &bot.SetMyCommandsParams{Commands: commands, LanguageCode: "ru"}); err != nil {
+		slog.Warn("payment notification bot ru command setup failed", "error", err)
+	}
+
+	pingHandler := func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		paymentNotificationPingHandler(ctx, b, update, allowedChatID, timezone)
+	}
+	notificationBot.RegisterHandler(bot.HandlerTypeMessageText, "/ping", bot.MatchTypeExact, pingHandler)
+	notificationBot.RegisterHandler(bot.HandlerTypeMessageText, "/ping@", bot.MatchTypePrefix, pingHandler)
+	if paymentService != nil {
+		paymentService.RegisterP2PNotificationHandlers(notificationBot, allowedChatID)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		slog.Info("Payment notification bot is starting")
+		notificationBot.Start(ctx)
+		slog.Info("Payment notification bot stopped")
+	}()
+	return done, true
+}
+
+func paymentNotificationPingHandler(ctx context.Context, b *bot.Bot, update *models.Update, allowedChatID int64, timezone string) {
+	if update.Message == nil {
+		return
+	}
+
+	if update.Message.Chat.ID != allowedChatID {
+		slog.Warn("payment notification bot rejected ping", "chat_id", update.Message.Chat.ID)
+		return
+	}
+
+	now := time.Now()
+	if location, locationErr := time.LoadLocation(timezone); locationErr == nil {
+		now = now.In(location)
+	} else {
+		slog.Warn("invalid payment notification timezone, using local timezone", "timezone", timezone, "error", locationErr)
+	}
+
+	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:    update.Message.Chat.ID,
+		ParseMode: models.ParseModeHTML,
+		Text: fmt.Sprintf(
+			"✅ <b>Уведомления работают</b>\n\n"+
+				"🤖 Второй бот на связи\n"+
+				"🕒 Время сервера: <b>%s</b>",
+			now.Format("02.01.2006 15:04:05 MST"),
+		),
+	})
+	if err != nil {
+		slog.Error("payment notification bot ping response failed", "error", err)
+	}
+}
+
+func subscriptionChecker(syncService *sync.SyncService, subService *notification.SubscriptionService) *cron.Cron {
+	c := cron.New(
+		cron.WithSeconds(),
+		cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)),
+	)
+
+	_, err := c.AddFunc("0 * * * * *", func() {
+		runSubscriptionCheck(syncService, subService)
+	})
+
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+func runSubscriptionCheck(syncService *sync.SyncService, subService *notification.SubscriptionService) {
+	if err := syncService.RefreshSubscriptionState(); err != nil {
+		slog.Error("Error refreshing subscriptions before notification check", "error", err)
+		return
+	}
+	if err := subService.ProcessSubscriptionExpiration(); err != nil {
+		slog.Error("Error sending subscription notifications", "error", err)
+	}
+}
+
+func initDatabase(ctx context.Context, connString string) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, err
+	}
+
+	config.MaxConns = 20
+	config.MinConns = 5
+
+	return pgxpool.ConnectConfig(ctx, config)
+}
+
+func setupInvoiceChecker(
+	customerRepository *database.CustomerRepository,
+	purchaseRepository *database.PurchaseRepository,
+	paymentService *payment.PaymentService) *cron.Cron {
+	c := cron.New(cron.WithSeconds())
+
+	_, err := c.AddFunc("*/5 * * * * *", func() {
+		ctx := context.Background()
+		checkCryptoPayInvoice(ctx, purchaseRepository, paymentService)
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = c.AddFunc("*/5 * * * * *", func() {
+		ctx := context.Background()
+		checkYookasaInvoice(ctx, purchaseRepository, paymentService)
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = c.AddFunc("15 * * * * *", func() {
+		ctx := context.Background()
+		checkAutoPayments(ctx, customerRepository, paymentService)
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = c.AddFunc("35 * * * * *", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+		defer cancel()
+		if err := paymentService.SyncLavaRecurringSubscriptions(ctx); err != nil {
+			slog.Error("LAVA recurring sync failed", "error", err)
+		}
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	return c
+}
+
+func checkYookasaInvoice(
+	ctx context.Context,
+	purchaseRepository *database.PurchaseRepository,
+	paymentService *payment.PaymentService,
+) {
+	if !paymentService.IsProviderEnabled(integrations.ProviderYooKassa) {
+		return
+	}
+
+	pendingPurchases, err := purchaseRepository.FindByInvoiceTypeAndStatus(
+		ctx,
+		database.InvoiceTypeYookasa,
+		database.PurchaseStatusPending,
+	)
+	if err != nil {
+		log.Printf("Error finding pending purchases: %v", err)
+		return
+	}
+	if len(*pendingPurchases) == 0 {
+		return
+	}
+
+	for _, purchase := range *pendingPurchases {
+		status, err := paymentService.SyncYookassaPurchaseStatus(ctx, purchase.ID)
+		if err != nil {
+			slog.Error("Error syncing YooKassa invoice", "purchaseId", purchase.ID, "invoiceId", purchase.YookasaID, "error", err)
+			continue
+		}
+
+		if status != database.PurchaseStatusPending && status != database.PurchaseStatusNew {
+			slog.Info("YooKassa invoice synced", "purchaseId", purchase.ID, "invoiceId", purchase.YookasaID, "status", status)
+		}
+	}
+}
+
+func checkAutoPayments(
+	ctx context.Context,
+	customerRepository *database.CustomerRepository,
+	paymentService *payment.PaymentService,
+) {
+	customers, err := customerRepository.FindAutoPaymentEligible(ctx, time.Now().UTC())
+	if err != nil {
+		slog.Error("Error finding auto payment customers", "error", err)
+		return
+	}
+
+	for i := range customers {
+		customer := customers[i]
+		if err := paymentService.ProcessAutoPayment(ctx, &customer); err != nil {
+			slog.Error("Error processing auto payment", "customerId", customer.ID, "telegramId", customer.TelegramID, "error", err)
+		}
+	}
+}
+
+func checkCryptoPayInvoice(
+	ctx context.Context,
+	purchaseRepository *database.PurchaseRepository,
+	paymentService *payment.PaymentService,
+) {
+	if !paymentService.IsProviderEnabled(integrations.ProviderCryptoPay) {
+		return
+	}
+	cryptoPayClient := paymentService.CurrentCryptoPayClient()
+	if cryptoPayClient == nil {
+		return
+	}
+
+	pendingPurchases, err := purchaseRepository.FindByInvoiceTypeAndStatus(
+		ctx,
+		database.InvoiceTypeCrypto,
+		database.PurchaseStatusPending,
+	)
+	if err != nil {
+		log.Printf("Error finding pending purchases: %v", err)
+		return
+	}
+	if len(*pendingPurchases) == 0 {
+		return
+	}
+
+	var invoiceIDs []string
+
+	for _, purchase := range *pendingPurchases {
+		if purchase.CryptoInvoiceID != nil {
+			invoiceIDs = append(invoiceIDs, fmt.Sprintf("%d", *purchase.CryptoInvoiceID))
+		}
+	}
+
+	if len(invoiceIDs) == 0 {
+		return
+	}
+
+	stringInvoiceIDs := strings.Join(invoiceIDs, ",")
+	invoices, err := cryptoPayClient.GetInvoices("", "", "", stringInvoiceIDs, 0, 0)
+	if err != nil {
+		log.Printf("Error getting invoices: %v", err)
+		return
+	}
+
+	for _, invoice := range *invoices {
+		if invoice.InvoiceID != nil && invoice.IsPaid() {
+			payload := strings.Split(invoice.Payload, "&")
+			purchaseID, err := strconv.Atoi(strings.Split(payload[0], "=")[1])
+			username := strings.Split(payload[1], "=")[1]
+			ctxWithUsername := context.WithValue(ctx, "username", username)
+			err = paymentService.ProcessPurchaseById(ctxWithUsername, int64(purchaseID))
+			if err != nil {
+				slog.Error("Error processing invoice", "invoiceId", invoice.InvoiceID, "error", err)
+			} else {
+				slog.Info("Invoice processed", "invoiceId", invoice.InvoiceID, "purchaseId", purchaseID)
+			}
+
+		}
+	}
+
+}

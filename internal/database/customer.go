@@ -1,0 +1,770 @@
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"link-bot/utils"
+	"log/slog"
+	"strings"
+	"time"
+
+	sq "github.com/Masterminds/squirrel"
+	"github.com/google/uuid"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+)
+
+type CustomerRepository struct {
+	pool *pgxpool.Pool
+}
+
+var ErrGoogleIdentityConflict = errors.New("google identity is already linked")
+
+func NewCustomerRepository(poll *pgxpool.Pool) *CustomerRepository {
+	return &CustomerRepository{pool: poll}
+}
+
+type Customer struct {
+	ID                            int64      `db:"id"`
+	TelegramID                    int64      `db:"telegram_id"`
+	TelegramUsername              *string    `db:"telegram_username"`
+	ExpireAt                      *time.Time `db:"expire_at"`
+	CreatedAt                     time.Time  `db:"created_at"`
+	SubscriptionLink              *string    `db:"subscription_link"`
+	Language                      string     `db:"language"`
+	ChannelSubscriptionVerifiedAt *time.Time `db:"channel_subscription_verified_at"`
+	TrialUsed                     bool       `db:"trial_used"`
+	AutoPaymentEnabled            bool       `db:"autopay_enabled"`
+	AutoPaymentPlanMonths         *int       `db:"autopay_plan_months"`
+	YookasaPaymentMethodID        *uuid.UUID `db:"yookasa_payment_method_id"`
+	YookasaPaymentMethodType      *string    `db:"yookasa_payment_method_type"`
+	YookasaPaymentMethodTitle     *string    `db:"yookasa_payment_method_title"`
+	YookasaPaymentMethodSavedAt   *time.Time `db:"yookasa_payment_method_saved_at"`
+	YookasaLastChargeAt           *time.Time `db:"yookasa_last_charge_at"`
+	YookasaLastChargeStatus       *string    `db:"yookasa_last_charge_status"`
+	YookasaLastChargeError        *string    `db:"yookasa_last_charge_error"`
+	GoogleSubject                 *string    `db:"google_subject"`
+	GoogleEmail                   *string    `db:"google_email"`
+	GoogleEmailVerified           bool       `db:"google_email_verified"`
+	GoogleLinkedAt                *time.Time `db:"google_linked_at"`
+	TelegramIDIsSynthetic         bool       `db:"telegram_id_is_synthetic"`
+	IsBlocked                     bool       `db:"is_blocked"`
+	BlockedAt                     *time.Time `db:"blocked_at"`
+	BlockedReason                 *string    `db:"blocked_reason"`
+}
+
+var customerSelectColumns = []string{
+	"id",
+	"telegram_id",
+	"telegram_username",
+	"expire_at",
+	"created_at",
+	"subscription_link",
+	"language",
+	"channel_subscription_verified_at",
+	"trial_used",
+	"autopay_enabled",
+	"autopay_plan_months",
+	"yookasa_payment_method_id",
+	"yookasa_payment_method_type",
+	"yookasa_payment_method_title",
+	"yookasa_payment_method_saved_at",
+	"yookasa_last_charge_at",
+	"yookasa_last_charge_status",
+	"yookasa_last_charge_error",
+	"google_subject",
+	"google_email",
+	"google_email_verified",
+	"google_linked_at",
+	"telegram_id_is_synthetic",
+	"is_blocked",
+	"blocked_at",
+	"blocked_reason",
+}
+
+func scanCustomer(scanner interface {
+	Scan(dest ...interface{}) error
+}, customer *Customer) error {
+	return scanner.Scan(customerScanDestinations(customer)...)
+}
+
+func customerScanDestinations(customer *Customer) []interface{} {
+	return []interface{}{
+		&customer.ID,
+		&customer.TelegramID,
+		&customer.TelegramUsername,
+		&customer.ExpireAt,
+		&customer.CreatedAt,
+		&customer.SubscriptionLink,
+		&customer.Language,
+		&customer.ChannelSubscriptionVerifiedAt,
+		&customer.TrialUsed,
+		&customer.AutoPaymentEnabled,
+		&customer.AutoPaymentPlanMonths,
+		&customer.YookasaPaymentMethodID,
+		&customer.YookasaPaymentMethodType,
+		&customer.YookasaPaymentMethodTitle,
+		&customer.YookasaPaymentMethodSavedAt,
+		&customer.YookasaLastChargeAt,
+		&customer.YookasaLastChargeStatus,
+		&customer.YookasaLastChargeError,
+		&customer.GoogleSubject,
+		&customer.GoogleEmail,
+		&customer.GoogleEmailVerified,
+		&customer.GoogleLinkedAt,
+		&customer.TelegramIDIsSynthetic,
+		&customer.IsBlocked,
+		&customer.BlockedAt,
+		&customer.BlockedReason,
+	}
+}
+
+func customerReturningClause() string {
+	return "RETURNING " + strings.Join(customerSelectColumns, ", ")
+}
+
+func (cr *CustomerRepository) FindByExpirationRange(ctx context.Context, startDate, endDate time.Time) (*[]Customer, error) {
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where(
+			sq.And{
+				sq.NotEq{"expire_at": nil},
+				sq.GtOrEq{"expire_at": startDate},
+				sq.LtOrEq{"expire_at": endDate},
+			},
+		).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build select query: %w", err)
+	}
+
+	rows, err := cr.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query customers by expiration range: %w", err)
+	}
+	defer rows.Close()
+
+	var customers []Customer
+	for rows.Next() {
+		var customer Customer
+		if err := scanCustomer(rows, &customer); err != nil {
+			return nil, fmt.Errorf("failed to scan customer row: %w", err)
+		}
+		customers = append(customers, customer)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating over customer rows: %w", err)
+	}
+
+	return &customers, nil
+}
+
+func (cr *CustomerRepository) ClaimSubscriptionNotification(ctx context.Context, customerID int64, expireAt time.Time, kind string) (bool, error) {
+	result, err := cr.pool.Exec(ctx, `
+		INSERT INTO subscription_notification_delivery (customer_id, expire_at, kind)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (customer_id, expire_at, kind) DO NOTHING
+	`, customerID, expireAt, kind)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim subscription notification: %w", err)
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+func (cr *CustomerRepository) ReleaseSubscriptionNotification(ctx context.Context, customerID int64, expireAt time.Time, kind string) error {
+	_, err := cr.pool.Exec(ctx, `
+		DELETE FROM subscription_notification_delivery
+		WHERE customer_id = $1 AND expire_at = $2 AND kind = $3
+	`, customerID, expireAt, kind)
+	if err != nil {
+		return fmt.Errorf("failed to release subscription notification: %w", err)
+	}
+	return nil
+}
+
+func (cr *CustomerRepository) ClaimSubscriptionGrace(ctx context.Context, customerID int64, sourceExpireAt time.Time) (bool, error) {
+	result, err := cr.pool.Exec(ctx, `
+		INSERT INTO subscription_grace_delivery (customer_id, source_expire_at)
+		SELECT $1, $2
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM subscription_grace_delivery
+			WHERE customer_id = $1
+			  AND grace_expire_at BETWEEN $2::timestamptz - INTERVAL '5 seconds'
+			                          AND $2::timestamptz + INTERVAL '5 seconds'
+		)
+		ON CONFLICT (customer_id, source_expire_at) DO NOTHING
+	`, customerID, sourceExpireAt)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim subscription grace access: %w", err)
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+func (cr *CustomerRepository) CompleteSubscriptionGrace(ctx context.Context, customerID int64, sourceExpireAt, graceExpireAt time.Time, subscriptionLink string) error {
+	tx, err := cr.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start grace access transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	result, err := tx.Exec(ctx, `
+		UPDATE subscription_grace_delivery
+		SET grace_expire_at = $3, applied_at = NOW()
+		WHERE customer_id = $1 AND source_expire_at = $2 AND grace_expire_at IS NULL
+	`, customerID, sourceExpireAt, graceExpireAt)
+	if err != nil {
+		return fmt.Errorf("failed to complete subscription grace access: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("subscription grace access claim was not found")
+	}
+
+	result, err = tx.Exec(ctx, `
+		UPDATE customer
+		SET expire_at = $2,
+		    subscription_link = COALESCE(NULLIF($3, ''), subscription_link)
+		WHERE id = $1
+	`, customerID, graceExpireAt, strings.TrimSpace(subscriptionLink))
+	if err != nil {
+		return fmt.Errorf("failed to update customer grace access: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("no customer found with id: %s", utils.MaskHalfInt64(customerID))
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit grace access transaction: %w", err)
+	}
+	return nil
+}
+
+func (cr *CustomerRepository) ReleaseSubscriptionGraceClaim(ctx context.Context, customerID int64, sourceExpireAt time.Time) error {
+	_, err := cr.pool.Exec(ctx, `
+		DELETE FROM subscription_grace_delivery
+		WHERE customer_id = $1 AND source_expire_at = $2 AND grace_expire_at IS NULL
+	`, customerID, sourceExpireAt)
+	if err != nil {
+		return fmt.Errorf("failed to release subscription grace access claim: %w", err)
+	}
+	return nil
+}
+
+func (cr *CustomerRepository) FindAutoPaymentEligible(ctx context.Context, dueBefore time.Time) ([]Customer, error) {
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where(sq.And{
+			sq.Eq{"is_blocked": false},
+			sq.Expr("EXISTS (SELECT 1 FROM recurring_method rm WHERE rm.customer_id=customer.id AND rm.enabled AND rm.provider IN ('yookassa','cloudpayments','freekassa'))"),
+			sq.NotEq{"expire_at": nil},
+			sq.LtOrEq{"expire_at": dueBefore},
+		}).
+		OrderBy("expire_at ASC").
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build auto payment query: %w", err)
+	}
+
+	rows, err := cr.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query auto payment customers: %w", err)
+	}
+	defer rows.Close()
+
+	customers := make([]Customer, 0)
+	for rows.Next() {
+		var customer Customer
+		if err := scanCustomer(rows, &customer); err != nil {
+			return nil, fmt.Errorf("failed to scan auto payment customer: %w", err)
+		}
+		customers = append(customers, customer)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating auto payment customers: %w", err)
+	}
+
+	return customers, nil
+}
+
+func (cr *CustomerRepository) FindById(ctx context.Context, id int64) (*Customer, error) {
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where(sq.Eq{"id": id}).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build select query: %w", err)
+	}
+
+	var customer Customer
+	if err := scanCustomer(cr.pool.QueryRow(ctx, sql, args...), &customer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query customer: %w", err)
+	}
+
+	return &customer, nil
+}
+
+func (cr *CustomerRepository) FindByTelegramId(ctx context.Context, telegramId int64) (*Customer, error) {
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where(sq.Eq{"telegram_id": telegramId}).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build select query: %w", err)
+	}
+
+	var customer Customer
+	if err := scanCustomer(cr.pool.QueryRow(ctx, sql, args...), &customer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query customer: %w", err)
+	}
+
+	return &customer, nil
+}
+
+func NormalizeTelegramUsername(value string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "@"))
+}
+
+func (cr *CustomerRepository) FindByTelegramUsername(ctx context.Context, username string) (*Customer, error) {
+	username = NormalizeTelegramUsername(username)
+	if username == "" {
+		return nil, nil
+	}
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where("lower(telegram_username) = ?", username).
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build username select query: %w", err)
+	}
+	var customer Customer
+	if err := scanCustomer(cr.pool.QueryRow(ctx, sql, args...), &customer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query customer by Telegram username: %w", err)
+	}
+	return &customer, nil
+}
+
+// UpdateTelegramUsername transfers a current Telegram username from a stale
+// customer row before assigning it to the authenticated user. Telegram
+// usernames are globally unique but can be changed and reused over time.
+func (cr *CustomerRepository) UpdateTelegramUsername(ctx context.Context, customerID int64, username string) error {
+	username = NormalizeTelegramUsername(username)
+	tx, err := cr.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin Telegram username update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if username != "" {
+		if _, err = tx.Exec(ctx, `
+			UPDATE customer
+			SET telegram_username = NULL
+			WHERE id <> $1 AND lower(telegram_username) = $2
+		`, customerID, username); err != nil {
+			return fmt.Errorf("release stale Telegram username: %w", err)
+		}
+	}
+	var value interface{}
+	if username != "" {
+		value = username
+	}
+	if _, err = tx.Exec(ctx, `UPDATE customer SET telegram_username = $2 WHERE id = $1 AND telegram_username IS DISTINCT FROM $2`, customerID, value); err != nil {
+		return fmt.Errorf("update Telegram username: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit Telegram username update: %w", err)
+	}
+	return nil
+}
+
+func (cr *CustomerRepository) Create(ctx context.Context, customer *Customer) (*Customer, error) {
+	return cr.FindOrCreate(ctx, customer)
+}
+
+func (cr *CustomerRepository) FindOrCreate(ctx context.Context, customer *Customer) (*Customer, error) {
+	query := `
+		INSERT INTO customer (
+			telegram_id,
+			expire_at,
+			language,
+			trial_used,
+			autopay_enabled,
+			autopay_plan_months,
+			yookasa_payment_method_id,
+			yookasa_payment_method_type,
+			yookasa_payment_method_title,
+			yookasa_payment_method_saved_at,
+			yookasa_last_charge_at,
+			yookasa_last_charge_status,
+			yookasa_last_charge_error
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (telegram_id) DO UPDATE SET telegram_id = customer.telegram_id
+		` + customerReturningClause()
+
+	row := cr.pool.QueryRow(
+		ctx,
+		query,
+		customer.TelegramID,
+		customer.ExpireAt,
+		customer.Language,
+		customer.TrialUsed,
+		customer.AutoPaymentEnabled,
+		customer.AutoPaymentPlanMonths,
+		customer.YookasaPaymentMethodID,
+		customer.YookasaPaymentMethodType,
+		customer.YookasaPaymentMethodTitle,
+		customer.YookasaPaymentMethodSavedAt,
+		customer.YookasaLastChargeAt,
+		customer.YookasaLastChargeStatus,
+		customer.YookasaLastChargeError,
+	)
+
+	var result Customer
+	if err := scanCustomer(row, &result); err != nil {
+		return nil, fmt.Errorf("failed to find or create customer: %w", err)
+	}
+
+	slog.Info("user found or created in bot database", "telegramId", utils.MaskHalfInt64(result.TelegramID))
+	return &result, nil
+}
+
+func (cr *CustomerRepository) FindByGoogleSubject(ctx context.Context, subject string) (*Customer, error) {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return nil, nil
+	}
+
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where(sq.Eq{"google_subject": subject}).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build google subject select query: %w", err)
+	}
+
+	var customer Customer
+	if err := scanCustomer(cr.pool.QueryRow(ctx, sql, args...), &customer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query customer by google subject: %w", err)
+	}
+
+	return &customer, nil
+}
+
+func (cr *CustomerRepository) FindOrCreateByGoogleIdentity(ctx context.Context, subject, email string, verified bool, language string) (*Customer, error) {
+	customer, _, err := cr.FindOrCreateByGoogleIdentityWithCreated(ctx, subject, email, verified, language)
+	return customer, err
+}
+
+func (cr *CustomerRepository) FindOrCreateByGoogleIdentityWithCreated(ctx context.Context, subject, email string, verified bool, language string) (*Customer, bool, error) {
+	subject = strings.TrimSpace(subject)
+	email = strings.ToLower(strings.TrimSpace(email))
+	language = strings.TrimSpace(language)
+	if subject == "" || email == "" || !verified {
+		return nil, false, fmt.Errorf("invalid google identity")
+	}
+	if language == "" {
+		language = "en"
+	}
+
+	query := `
+		INSERT INTO customer (
+			telegram_id, language, google_subject, google_email, google_email_verified,
+			google_linked_at, telegram_id_is_synthetic
+		)
+		VALUES (nextval('google_customer_telegram_id_seq'), $1, $2, $3, $4, NOW(), TRUE)
+		ON CONFLICT (google_subject) WHERE google_subject IS NOT NULL AND google_subject <> ''
+		DO UPDATE SET
+			google_email = EXCLUDED.google_email,
+			google_email_verified = EXCLUDED.google_email_verified
+	` + customerReturningClause() + `, (xmax = 0)`
+
+	var customer Customer
+	var created bool
+	if err := cr.pool.QueryRow(ctx, query, language, subject, email, verified).Scan(append(customerScanDestinations(&customer), &created)...); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, false, ErrGoogleIdentityConflict
+		}
+		return nil, false, fmt.Errorf("failed to find or create customer by google identity: %w", err)
+	}
+
+	return &customer, created, nil
+}
+
+func (cr *CustomerRepository) FindByGoogleEmail(ctx context.Context, email string) (*Customer, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil, nil
+	}
+
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where("lower(google_email) = ?", email).
+		PlaceholderFormat(sq.Dollar)
+
+	sql, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build google email select query: %w", err)
+	}
+
+	var customer Customer
+	if err := scanCustomer(cr.pool.QueryRow(ctx, sql, args...), &customer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query customer by google email: %w", err)
+	}
+
+	return &customer, nil
+}
+
+func (cr *CustomerRepository) LinkGoogleIdentity(ctx context.Context, customerID int64, subject, email string, verified bool) (*Customer, error) {
+	subject = strings.TrimSpace(subject)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if customerID <= 0 || subject == "" || email == "" {
+		return nil, fmt.Errorf("invalid google identity link request")
+	}
+
+	query := `
+		UPDATE customer
+		SET google_subject = $2,
+		    google_email = $3,
+		    google_email_verified = $4,
+		    google_linked_at = COALESCE(google_linked_at, NOW())
+		WHERE id = $1
+	` + customerReturningClause()
+
+	var result Customer
+	if err := scanCustomer(cr.pool.QueryRow(ctx, query, customerID, subject, email, verified), &result); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("no customer found with id: %s", utils.MaskHalfInt64(customerID))
+		}
+		return nil, fmt.Errorf("failed to link google identity: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (cr *CustomerRepository) UpdateFields(ctx context.Context, id int64, updates map[string]interface{}) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	buildUpdate := sq.Update("customer").
+		PlaceholderFormat(sq.Dollar).
+		Where(sq.Eq{"id": id})
+
+	for field, value := range updates {
+		buildUpdate = buildUpdate.Set(field, value)
+	}
+
+	sql, args, err := buildUpdate.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build update query: %w", err)
+	}
+
+	result, err := cr.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update customer: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no customer found with id: %s", utils.MaskHalfInt64(id))
+	}
+
+	return nil
+}
+
+func (cr *CustomerRepository) FindByTelegramIds(ctx context.Context, telegramIDs []int64) ([]Customer, error) {
+	buildSelect := sq.Select(customerSelectColumns...).
+		From("customer").
+		Where(sq.Eq{"telegram_id": telegramIDs}).
+		PlaceholderFormat(sq.Dollar)
+
+	sqlStr, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build select query: %w", err)
+	}
+
+	rows, err := cr.pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query customers: %w", err)
+	}
+	defer rows.Close()
+
+	var customers []Customer
+	for rows.Next() {
+		var customer Customer
+		if err := scanCustomer(rows, &customer); err != nil {
+			return nil, fmt.Errorf("failed to scan customer row: %w", err)
+		}
+		customers = append(customers, customer)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating over customer rows: %w", err)
+	}
+
+	return customers, nil
+}
+
+func (cr *CustomerRepository) ListAllTelegramIDs(ctx context.Context, ignoreUnsubscribe ...bool) ([]int64, error) {
+	buildSelect := sq.Select("telegram_id").
+		From("customer").
+		Where("NOT is_blocked AND NOT telegram_id_is_synthetic AND telegram_id > 0").
+		OrderBy("telegram_id ASC").
+		PlaceholderFormat(sq.Dollar)
+	if len(ignoreUnsubscribe) == 0 || !ignoreUnsubscribe[0] {
+		buildSelect = buildSelect.Where("NOT EXISTS(SELECT 1 FROM customer_broadcast_unsubscribe u WHERE u.customer_id=customer.id)")
+	}
+
+	sqlStr, args, err := buildSelect.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build telegram id list query: %w", err)
+	}
+
+	rows, err := cr.pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query telegram ids: %w", err)
+	}
+	defer rows.Close()
+
+	telegramIDs := make([]int64, 0)
+	for rows.Next() {
+		var telegramID int64
+		if err := rows.Scan(&telegramID); err != nil {
+			return nil, fmt.Errorf("failed to scan telegram id: %w", err)
+		}
+		telegramIDs = append(telegramIDs, telegramID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating telegram ids: %w", err)
+	}
+
+	return telegramIDs, nil
+}
+
+func (cr *CustomerRepository) CreateBatch(ctx context.Context, customers []Customer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	builder := sq.Insert("customer").
+		Columns(
+			"telegram_id",
+			"expire_at",
+			"language",
+			"subscription_link",
+			"trial_used",
+			"autopay_enabled",
+			"autopay_plan_months",
+			"yookasa_payment_method_id",
+			"yookasa_payment_method_type",
+			"yookasa_payment_method_title",
+			"yookasa_payment_method_saved_at",
+			"yookasa_last_charge_at",
+			"yookasa_last_charge_status",
+			"yookasa_last_charge_error",
+		).
+		PlaceholderFormat(sq.Dollar)
+
+	for _, cust := range customers {
+		builder = builder.Values(
+			cust.TelegramID,
+			cust.ExpireAt,
+			cust.Language,
+			cust.SubscriptionLink,
+			cust.TrialUsed,
+			cust.AutoPaymentEnabled,
+			cust.AutoPaymentPlanMonths,
+			cust.YookasaPaymentMethodID,
+			cust.YookasaPaymentMethodType,
+			cust.YookasaPaymentMethodTitle,
+			cust.YookasaPaymentMethodSavedAt,
+			cust.YookasaLastChargeAt,
+			cust.YookasaLastChargeStatus,
+			cust.YookasaLastChargeError,
+		)
+	}
+
+	sqlStr, args, err := builder.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build batch insert query: %w", err)
+	}
+
+	_, err = cr.pool.Exec(ctx, sqlStr, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute batch insert: %w", err)
+	}
+
+	return nil
+}
+
+func (cr *CustomerRepository) UpdateBatch(ctx context.Context, customers []Customer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	query := "UPDATE customer SET expire_at = c.expire_at, subscription_link = c.subscription_link FROM (VALUES "
+	var args []interface{}
+	for i, cust := range customers {
+		if i > 0 {
+			query += ", "
+		}
+		query += fmt.Sprintf("($%d::bigint, $%d::timestamp, $%d::text)", i*3+1, i*3+2, i*3+3)
+		args = append(args, cust.TelegramID, cust.ExpireAt, cust.SubscriptionLink)
+	}
+	query += ") AS c(telegram_id, expire_at, subscription_link) WHERE customer.telegram_id = c.telegram_id"
+
+	_, err := cr.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute batch update: %w", err)
+	}
+
+	return nil
+}
+
+func (cr *CustomerRepository) DeleteByNotInTelegramIds(ctx context.Context, telegramIDs []int64) error {
+	if len(telegramIDs) == 0 {
+		return nil
+	}
+
+	buildDelete := sq.Delete("customer").
+		Where(sq.NotEq{"telegram_id": telegramIDs}).
+		PlaceholderFormat(sq.Dollar)
+
+	sqlStr, args, err := buildDelete.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build delete query: %w", err)
+	}
+
+	if _, err = cr.pool.Exec(ctx, sqlStr, args...); err != nil {
+		return fmt.Errorf("failed to execute delete query: %w", err)
+	}
+
+	return nil
+}
